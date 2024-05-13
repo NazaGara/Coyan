@@ -1,0 +1,6 @@
+/target
+/tests
+/results
+*.ipynb
+other*
+.tmp

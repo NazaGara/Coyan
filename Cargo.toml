@@ -1,0 +1,15 @@
+[workspace]
+members = [
+    "coyan_fta",
+    "coyan_rft"
+]
+resolver = "2" 
+exclude = ["private"]
+
+[profile.release]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+lto = true
+panic = 'abort'
