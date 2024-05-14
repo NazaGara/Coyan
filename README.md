@@ -13,7 +13,7 @@ cargo build --release
 
 ## Usage
 
-The tool currently posees the `Fault Tree to CNF` [coyan_fta]() module and the `Random Fault Tree Generator` [coyan_rft]() module.
+The tool currently posees the `Fault Tree to CNF` [coyan_fta](https://github.com/NazaGara/Coyan/tree/main/coyan_fta) module and the `Random Fault Tree Generator` [coyan_rft](https://github.com/NazaGara/Coyan/tree/main/coyan_rft) module.
 
 Each one have their own usage detailed on the correspondent subdirectory.
 
