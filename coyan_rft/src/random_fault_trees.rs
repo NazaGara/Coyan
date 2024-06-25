@@ -5,7 +5,7 @@ use rand::{
     seq::{IteratorRandom, SliceRandom},
     Rng, SeedableRng,
 };
-use std::{fs::File, io::Write, ops::Index};
+use std::{collections::HashMap, fs::File, io::Write, ops::Index};
 const EPSILON: f64 = f64::EPSILON; // 2.2204460492503131E-16f64
 
 /// Configuration for the random FT. Each value represent the proportion of each type of node.
@@ -226,9 +226,15 @@ impl RFaultTree<String> {
 
     /// Save the fault tree CNF formula into a .wcnf o .cnf file depending on the format.
     pub fn save_to_dft(&self, filename: String) {
+        let reverse_lookup_table: HashMap<NodeId, String> = self
+            .ft
+            .lookup_table
+            .iter()
+            .map(|(k, v)| (v.clone(), k.clone()))
+            .collect();
         let top_line = format!(
             "toplevel {};",
-            self.ft.reverse_lookup_table.get(&self.ft.root_id).unwrap()
+            reverse_lookup_table.get(&self.ft.root_id).unwrap()
         );
 
         let gates = self
@@ -238,17 +244,17 @@ impl RFaultTree<String> {
             .filter_map(|(i, n)| match &n.kind {
                 NodeType::And(_) => Some(format!(
                     "{} {};",
-                    self.ft.reverse_lookup_table.get(&i).unwrap(),
+                    reverse_lookup_table.get(&i).unwrap(),
                     n.get_formula()._reduce_formula()._formula_to_dft()
                 )),
                 NodeType::Or(_) => Some(format!(
                     "{} {};",
-                    self.ft.reverse_lookup_table.get(&i).unwrap(),
+                    reverse_lookup_table.get(&i).unwrap(),
                     n.get_formula()._reduce_formula()._formula_to_dft()
                 )),
                 NodeType::Vot(_, _) => Some(format!(
                     "{} {};",
-                    self.ft.reverse_lookup_table.get(&i).unwrap(),
+                    reverse_lookup_table.get(&i).unwrap(),
                     n.get_formula()._reduce_formula()._formula_to_dft()
                 )),
                 _ => None,

@@ -22,7 +22,6 @@ fn _read_lines(filename: &str) -> Vec<String> {
 /// A Fault Tree representation in Rust.
 pub struct FaultTree<T> {
     pub lookup_table: HashMap<String, NodeId>,
-    pub reverse_lookup_table: HashMap<NodeId, String>,
     pub nodes: IndexVec<NodeId, Node<T>>,
     pub root_id: NodeId,
     node_counter: AtomicUsize,
@@ -35,7 +34,6 @@ impl Clone for FaultTree<String> {
 
         FaultTree {
             lookup_table: self.lookup_table.clone(),
-            reverse_lookup_table: self.reverse_lookup_table.clone(),
             nodes: self.nodes.clone(),
             root_id: self.root_id.clone(),
             node_counter,
@@ -48,7 +46,6 @@ impl FaultTree<String> {
     pub fn new() -> Self {
         FaultTree {
             lookup_table: HashMap::new(),
-            reverse_lookup_table: HashMap::new(),
             nodes: IndexVec::new(),
             root_id: NodeId::new(0),
             node_counter: AtomicUsize::new(0),
@@ -534,7 +531,6 @@ impl FaultTree<String> {
     /// Add the node to the fields of the struct.
     pub fn add_node(&mut self, name: String, node: Node<String>, nid: NodeId) {
         self.lookup_table.insert(name.clone(), nid);
-        self.reverse_lookup_table.insert(nid, name.to_string());
         self.nodes.insert(nid, node);
     }
 
