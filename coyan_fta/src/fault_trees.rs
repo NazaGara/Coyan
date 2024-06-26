@@ -127,8 +127,7 @@ impl FaultTree<String> {
                         .collect_vec();
                     let nid = self.new_id();
                     let node = Node::new(
-                        NodeType::PlaceHolder(name.to_owned(), op.to_lowercase().to_string(), args),
-                        &self.nodes,
+                        NodeType::PlaceHolder(name.to_owned(), op.to_lowercase().to_string(), args)
                     );
                     self.add_node(name.to_string(), node, nid);
                 }
@@ -141,7 +140,7 @@ impl FaultTree<String> {
                         || op.as_str().to_lowercase() == "fdep" =>
                 {
                     panic!(
-                        "Unsupported type of gate: {}. ¿Is {} a Static FT?",
+                        "Unsupported type of gate: {}. Is {} a Static FT?",
                         op.as_str(),
                         filename
                     )
@@ -180,8 +179,7 @@ impl FaultTree<String> {
                                     name.to_owned(),
                                     op.to_lowercase().to_string(),
                                     args,
-                                ),
-                                &self.nodes,
+                                )
                             );
                             self.add_node(name.to_string(), node, nid);
                         }
@@ -192,8 +190,8 @@ impl FaultTree<String> {
                                 name.to_owned(),
                                 op.to_lowercase().to_string(),
                                 args,
-                            ),
-                            &self.nodes,
+                            )
+                            
                         );
                         self.add_node(name.to_string(), node, nid);
                     }
@@ -212,8 +210,7 @@ impl FaultTree<String> {
                         .expect("Error while parsing value for basic event");
                     let nid = self.new_id();
                     let node = Node::new(
-                        NodeType::BasicEvent(name.to_owned(), method.to_owned(), prob),
-                        &self.nodes,
+                        NodeType::BasicEvent(name.to_owned(), method.to_owned(), prob)
                     );
                     self.add_node(name.to_string(), node, nid);
                 }
@@ -278,8 +275,7 @@ impl FaultTree<String> {
                                 name.to_owned(),
                                 op.to_lowercase().to_string(),
                                 args_replaced,
-                            ),
-                            &self.nodes,
+                            )
                         );
 
                         self.update_roots(node, *nid)
@@ -318,11 +314,11 @@ impl FaultTree<String> {
                         .collect_vec();
 
                     let mut node: Node<String> = if op.eq("or") {
-                        Node::new(NodeType::Or(args_ids), &self.nodes)
+                        Node::new(NodeType::Or(args_ids))
                     } else if op.eq("xor") {
-                        Node::new(NodeType::Xor(args_ids), &self.nodes)
+                        Node::new(NodeType::Xor(args_ids))
                     } else if op.eq("and") {
-                        Node::new(NodeType::And(args_ids), &self.nodes)
+                        Node::new(NodeType::And(args_ids))
                     } else if op.eq("not") {
                         assert_eq!(
                             args_ids.len(),
@@ -330,8 +326,7 @@ impl FaultTree<String> {
                             "Something is wrong with the negated gate"
                         );
                         Node::new(
-                            NodeType::Not(args_ids.first().unwrap().to_owned()),
-                            &self.nodes,
+                            NodeType::Not(args_ids.first().unwrap().to_owned())
                         )
                     } else if op.contains("of") {
                         let split = op.split("of").collect_vec();
@@ -349,14 +344,14 @@ impl FaultTree<String> {
                         }
 
                         if n == k {
-                            Node::new(NodeType::And(args_ids), &self.nodes)
+                            Node::new(NodeType::And(args_ids))
                         } else if k == 1 {
-                            Node::new(NodeType::Or(args_ids), &self.nodes)
+                            Node::new(NodeType::Or(args_ids))
                         } else {
                             let clause_size = n - k;
 
                             if keep_vot {
-                                Node::new(NodeType::Vot(k as i64, args_ids), &self.nodes)
+                                Node::new(NodeType::Vot(k as i64, args_ids))
                             } else {
                                 let mut roots = args.clone();
                                 let mut aux_ids = vec![];
@@ -376,7 +371,7 @@ impl FaultTree<String> {
                                         let aux_gid = self.new_id();
                                         aux_ids.push(aux_gid);
                                         let mut aux_gate =
-                                            Node::new(NodeType::Or(new_args), &self.nodes);
+                                            Node::new(NodeType::Or(new_args));
                                         if set_formula {
                                             aux_gate.set_formula(&self.nodes)
                                         };
@@ -387,7 +382,7 @@ impl FaultTree<String> {
                                         )
                                     }
                                 }
-                                Node::new(NodeType::And(aux_ids), &self.nodes)
+                                Node::new(NodeType::And(aux_ids))
                             }
                         }
                     } else {
@@ -416,7 +411,7 @@ impl FaultTree<String> {
     pub fn apply_tseitin(&self) -> Formula<NodeId> {
         let mut args = vec![Formula::Atom(self.root_id)];
         for (nid, node) in self.nodes.iter_enumerated() {
-            match node.tseitin_transformation(nid, &self.nodes) {
+            match node.tseitin_transformation(nid) {
                 Formula::And(or_args) => args.extend(or_args),
                 Formula::Or(literals) => args.push(Formula::Or(literals)),
                 Formula::_True => {}

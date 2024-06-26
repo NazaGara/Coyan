@@ -82,15 +82,17 @@ impl RFaultTree<String> {
         let root_name = "root".to_owned();
         let val: f64 = rng.gen();
         let mut root_node: Node<String> = if val >= p_and {
-            Node::new(
-                NodeType::PlaceHolder(root_name.clone(), "and".to_owned(), roots),
-                &ft.nodes,
-            )
+            Node::new(NodeType::PlaceHolder(
+                root_name.clone(),
+                "and".to_owned(),
+                roots,
+            ))
         } else {
-            Node::new(
-                NodeType::PlaceHolder(root_name.clone(), "or".to_owned(), roots),
-                &ft.nodes,
-            )
+            Node::new(NodeType::PlaceHolder(
+                root_name.clone(),
+                "or".to_owned(),
+                roots,
+            ))
         };
 
         root_node.set_formula(&ft.nodes);
@@ -125,25 +127,24 @@ impl RFaultTree<String> {
                 .collect_vec();
 
             let mut gate = if val <= p_and {
-                Node::new(
-                    NodeType::PlaceHolder(g_name.to_owned(), "and".to_owned(), roots),
-                    &ft.nodes,
-                )
+                Node::new(NodeType::PlaceHolder(
+                    g_name.to_owned(),
+                    "and".to_owned(),
+                    roots,
+                ))
             } else if val <= p_and + p_or {
-                Node::new(
-                    NodeType::PlaceHolder(g_name.to_owned(), "or".to_owned(), roots),
-                    &ft.nodes,
-                )
+                Node::new(NodeType::PlaceHolder(
+                    g_name.to_owned(),
+                    "or".to_owned(),
+                    roots,
+                ))
             } else {
                 let choose_k = rng.gen_range(2..roots.len());
-                Node::new(
-                    NodeType::PlaceHolder(
-                        g_name.to_owned(),
-                        format!("{}of{}", choose_k, roots.len()),
-                        roots,
-                    ),
-                    &ft.nodes,
-                )
+                Node::new(NodeType::PlaceHolder(
+                    g_name.to_owned(),
+                    format!("{}of{}", choose_k, roots.len()),
+                    roots,
+                ))
             };
             gate.set_formula(&ft.nodes);
             ft.add_node(g_name.to_string(), gate, nid);
@@ -155,10 +156,11 @@ impl RFaultTree<String> {
             .map(|be| {
                 let nid = ft.new_id();
                 let p: f64 = rng.gen();
-                let mut node = Node::new(
-                    NodeType::BasicEvent(be.to_string(), "prob".to_owned(), p * p_multipler),
-                    &ft.nodes,
-                );
+                let mut node = Node::new(NodeType::BasicEvent(
+                    be.to_string(),
+                    "prob".to_owned(),
+                    p * p_multipler,
+                ));
                 node.set_formula(&ft.nodes);
                 ft.add_node(be.to_string(), node, nid);
             })
@@ -205,10 +207,7 @@ impl RFaultTree<String> {
                 } else {
                     op
                 };
-                let mut new_node = Node::new(
-                    NodeType::PlaceHolder(g.to_owned(), op, new_roots),
-                    &ft.nodes,
-                );
+                let mut new_node = Node::new(NodeType::PlaceHolder(g.to_owned(), op, new_roots));
                 new_node.set_formula(&ft.nodes);
                 ft.update_roots(new_node, nid);
             })

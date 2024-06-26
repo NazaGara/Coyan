@@ -111,7 +111,7 @@ impl<T> Node<T>
 where
     T: Debug + Clone,
 {
-    pub fn new(kind: NodeType<T>, _nodes: &IndexVec<NodeId, Node<T>>) -> Self {
+    pub fn new(kind: NodeType<T>) -> Self {
         Node {
             kind,
             formula: Formula::_True,
@@ -222,7 +222,6 @@ where
     pub fn tseitin_transformation(
         &self,
         self_id: NodeId,
-        _nodes: &IndexVec<NodeId, Node<String>>,
     ) -> Formula<NodeId> {
         match &self.kind {
             NodeType::PlaceHolder(_, _, _) => {
