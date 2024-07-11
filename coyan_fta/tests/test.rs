@@ -1,11 +1,11 @@
-use coyan_fta::{self};
+use coyan_fta::{self, solver::get_solver_from_path};
 const EPSILON: f64 = f64::EPSILON; // 2.2204460492503131E-16f64
 #[test]
 fn xor() {
-    let solver_cmd = vec![String::from("../solvers/gpmc"), String::from("mode=1")];
+    let solver_cmd = String::from("../solvers/gpmc");
     let filename = "../tests/xor.dft";
     let mut ft = coyan_fta::fault_trees::FaultTree::new();
-    let solver = coyan_fta::solver::Solver::from_vec(solver_cmd.clone());
+    let solver = get_solver_from_path(&solver_cmd);
     ft.read_from_file(filename, true);
     let tep = solver.compute_probabilty(&ft, coyan_fta::formula::CNFFormat::MC21, 1.0);
     let true_tep = 0.6925;
@@ -15,10 +15,10 @@ fn xor() {
 
 #[test]
 fn not() {
-    let solver_cmd = vec![String::from("../solvers/gpmc"), String::from("mode=1")];
+    let solver_cmd = String::from("../solvers/gpmc");
     let filename = "../tests/not.dft";
     let mut ft = coyan_fta::fault_trees::FaultTree::new();
-    let solver = coyan_fta::solver::Solver::from_vec(solver_cmd.clone());
+    let solver = get_solver_from_path(&solver_cmd);
     ft.read_from_file(filename, true);
     let tep = solver.compute_probabilty(&ft, coyan_fta::formula::CNFFormat::MC21, 1.0);
     let true_tep = 1.0 - 0.25;
@@ -27,10 +27,10 @@ fn not() {
 }
 #[test]
 fn and() {
-    let solver_cmd = vec![String::from("../solvers/gpmc"), String::from("mode=1")];
+    let solver_cmd = String::from("../solvers/gpmc");
     let filename = "../tests/and.dft";
     let mut ft = coyan_fta::fault_trees::FaultTree::new();
-    let solver = coyan_fta::solver::Solver::from_vec(solver_cmd.clone());
+    let solver = get_solver_from_path(&solver_cmd);
     ft.read_from_file(filename, true);
     let tep = solver.compute_probabilty(&ft, coyan_fta::formula::CNFFormat::MC21, 1.0);
     let true_tep = 0.25 * (0.35 * 0.45);
@@ -40,10 +40,10 @@ fn and() {
 
 #[test]
 fn or() {
-    let solver_cmd = vec![String::from("../solvers/gpmc"), String::from("mode=1")];
+    let solver_cmd = String::from("../solvers/gpmc");
     let filename = "../tests/or.dft";
     let mut ft = coyan_fta::fault_trees::FaultTree::new();
-    let solver = coyan_fta::solver::Solver::from_vec(solver_cmd.clone());
+    let solver = get_solver_from_path(&solver_cmd);
     ft.read_from_file(filename, true);
     let tep = solver.compute_probabilty(&ft, coyan_fta::formula::CNFFormat::MC21, 1.0);
     let true_tep = 1.0 - ((1.0 - 0.25) * (1.0 - 0.35) * (1.0 - 0.45));
@@ -53,10 +53,10 @@ fn or() {
 
 #[test]
 fn vot() {
-    let solver_cmd = vec![String::from("../solvers/gpmc"), String::from("mode=1")];
+    let solver_cmd = String::from("../solvers/gpmc");
     let filename = "../tests/3of5.dft";
     let mut ft = coyan_fta::fault_trees::FaultTree::new();
-    let solver = coyan_fta::solver::Solver::from_vec(solver_cmd.clone());
+    let solver = get_solver_from_path(&solver_cmd);
     ft.read_from_file(filename, true);
     let tep = solver.compute_probabilty(&ft, coyan_fta::formula::CNFFormat::MC21, 1.0);
     let true_tep = 0.403040625; //Obtained from Storm-DFT
@@ -67,8 +67,8 @@ fn vot() {
 
 #[test]
 fn ffort_sample() {
-    let solver_cmd = vec![String::from("../solvers/gpmc"), String::from("mode=1")];
-    let solver = coyan_fta::solver::Solver::from_vec(solver_cmd.clone());
+    let solver_cmd = String::from("../solvers/gpmc");
+    let solver = get_solver_from_path(&solver_cmd);
     let filename0 = "../tests/ogpf.dft";
     let filename1 = "../tests/pt.dft";
     let filename2 = "../tests/rbc.dft";

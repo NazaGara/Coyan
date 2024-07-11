@@ -1,6 +1,5 @@
 use clap::Parser;
-use coyan_fta::formula::CNFFormat;
-use coyan_fta::solver::Solver;
+use coyan_fta::{formula::CNFFormat, solver::get_solver_from_path};
 use rand::Rng;
 use random_fault_trees::{RFTConfig, RFaultTree};
 use std::{fmt::Debug, str::FromStr, time::Instant};
@@ -56,8 +55,8 @@ struct Args {
     seed: Option<u64>,
     /// Solver path and arguments.
     /// First is the solvers path, then the prefix for the args and then the arguments
-    #[arg(short, long, value_delimiter = ':')] //, conflicts_with = "rate_vot")]
-    solver_path: Option<Vec<String>>,
+    #[arg(short, long)] //, conflicts_with = "rate_vot")]
+    solver_path: Option<String>,
     /// Output format for the CNF formual. The format gives the extension to the file. Currently supports MC21 and MCC.
     #[arg(long, default_value = "MC21")]
     format: Option<String>,
@@ -113,7 +112,7 @@ fn main() {
             println!("Time elapsed: {:?}.", duration);
         }
         Option::Some(cmd) => {
-            let solver = Solver::from_vec(cmd.to_owned());
+            let solver = get_solver_from_path(&cmd);
             rft.save_to_dft(output_filename);
             let ft = rft.extract_ft();
 

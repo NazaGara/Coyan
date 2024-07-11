@@ -1,20 +1,19 @@
 #[allow(dead_code)]
 use clap::Parser;
 use formula::CNFFormat;
-
 use itertools::Itertools;
 use rayon::prelude::*;
 use std::path::Path;
 use std::time::Instant;
 use std::{fmt::Debug, str::FromStr};
 
-use crate::fault_trees::FaultTree;
-use crate::solver::Solver;
-
 mod fault_trees;
 mod formula;
 mod nodes;
 mod solver;
+
+use crate::fault_trees::FaultTree;
+use crate::solver::*;
 
 #[derive(Parser, Debug)]
 struct Arguments {
@@ -53,9 +52,11 @@ struct SolveCommand {
     #[arg(short, long, required = true)]
     input: String,
     /// Solver path and arguments.
-    /// Example: /solvers/gpmc:mode=1
-    #[arg(short, long, value_delimiter = ':')]
-    solver_path: Vec<String>,
+    /// Example: /solvers/gpmc or /solvers/sharpSAT
+    //#[arg(short, long, value_delimiter = ':')]
+    //solver_path: Vec<String>,
+    #[arg(short, long)]
+    solver_path: String,
     /// Timebounds, creates a range of values according to the command arguments: [start, end, step].
     #[arg(
         long,
@@ -181,7 +182,7 @@ fn translate(command: TranslateCommand) {
 /// to handle each run.
 fn compute_tep(command: SolveCommand) {
     let dft_filename = command.input;
-    let solver_cmd = command.solver_path;
+    let solver_path = command.solver_path;
     let format =
         CNFFormat::from_str(&command.format).expect("Unsupported format. Try MCC or MC21.");
     let num_workers = command.num_threads;
@@ -201,7 +202,7 @@ fn compute_tep(command: SolveCommand) {
     }
     match command.timebounds {
         None => {
-            let solver = Solver::from_vec(solver_cmd.to_owned());
+            let solver = get_solver_from_path(&solver_path);
             if verbose {
                 println!(
                     "Running Solver {} for timepoint {}",
@@ -240,7 +241,7 @@ fn compute_tep(command: SolveCommand) {
                 if t > end {
                     None
                 } else {
-                    let solver = Solver::from_vec(solver_cmd.to_owned());
+                    let solver = get_solver_from_path(&solver_path);
                     if verbose {
                         println!("Running Solver {} for timepoint {}", solver._name(), t);
                     }

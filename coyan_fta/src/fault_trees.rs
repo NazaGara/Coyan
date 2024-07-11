@@ -3,7 +3,6 @@ use itertools::Itertools;
 use nodes::{Node, NodeId, NodeType};
 use std::fs::File;
 use std::io::Write;
-
 use std::sync::atomic::AtomicUsize;
 use std::{collections::HashMap, fs::read_to_string};
 
@@ -485,7 +484,7 @@ impl FaultTree<String> {
         }
     }
 
-    pub fn dump_stdin(&self, format: CNFFormat, timebound: f64) -> String {
+    pub fn dump_cnf(&self, format: CNFFormat, timebound: f64) -> String {
         let cnf_formula = self.apply_tseitin();
         let text_formula = cnf_formula.to_text();
         let n_vars = self.get_count();
