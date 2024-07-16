@@ -1,4 +1,4 @@
-use coyan_fta::{fault_trees::*, nodes::*};
+use coyan_fta::{fault_tree::*, fault_tree_normalizer::*, nodes::*};
 use itertools::Itertools;
 use rand::{
     rngs::StdRng,
@@ -31,7 +31,8 @@ impl RFTConfig {
 }
 
 pub struct RFaultTree<T> {
-    ft: FaultTree<T>,
+    // ft: FaultTree<T>,
+    ft: FaultTreeNormalizer<T>,
     _n_nodes: usize,
     _config: RFTConfig,
 }
@@ -39,7 +40,7 @@ pub struct RFaultTree<T> {
 impl RFaultTree<String> {
     /// Method to extract the fault tree. Notice that consumes the object.
     pub fn extract_ft(self) -> FaultTree<String> {
-        self.ft
+        FaultTree::from(self.ft)
     }
     pub fn _number_nodes(&self) -> usize {
         self._n_nodes
@@ -61,7 +62,8 @@ impl RFaultTree<String> {
         assert!(n_be > 1, "We need at least more than 2 Basic Events.");
 
         // Create FT, generate BE and Gates.
-        let mut ft = FaultTree::new();
+        // let mut ft = FaultTree::new();
+        let mut ft_norm = FaultTreeNormalizer::new();
         let basic_events = (0..n_be)
             .into_iter()
             .map(|i| format!("x{}", i))
@@ -95,17 +97,17 @@ impl RFaultTree<String> {
             ))
         };
 
-        root_node.set_formula(&ft.nodes);
+        root_node.set_formula(&ft_norm.nodes);
 
-        let nid = ft.new_id();
-        ft.root_id = nid;
-        ft.add_node(root_name.to_string(), root_node, nid);
+        let nid = ft_norm.new_id();
+        ft_norm.root_id = nid;
+        ft_norm.add_node(root_name.to_string(), root_node, nid);
 
         let mut used_be = vec![];
         // For each gate, we take as roots other gates with bigger id.
         // Id index is too large, fills with basic events.
         for (i, g_name) in copy.into_iter().enumerate() {
-            let nid = ft.new_id();
+            let nid = ft_norm.new_id();
             let k = rng.gen_range(3..=max_number_children); //=5
             let val: f64 = rng.gen();
 
@@ -146,23 +148,23 @@ impl RFaultTree<String> {
                     roots,
                 ))
             };
-            gate.set_formula(&ft.nodes);
-            ft.add_node(g_name.to_string(), gate, nid);
+            gate.set_formula(&ft_norm.nodes);
+            ft_norm.add_node(g_name.to_string(), gate, nid);
         }
 
         // Set probability for the basic events. Currently using discrete probabilities.
         let _ = basic_events
             .iter()
             .map(|be| {
-                let nid = ft.new_id();
+                let nid = ft_norm.new_id();
                 let p: f64 = rng.gen();
                 let mut node = Node::new(NodeType::BasicEvent(
                     be.to_string(),
                     "prob".to_owned(),
                     p * p_multipler,
                 ));
-                node.set_formula(&ft.nodes);
-                ft.add_node(be.to_string(), node, nid);
+                node.set_formula(&ft_norm.nodes);
+                ft_norm.add_node(be.to_string(), node, nid);
             })
             .collect_vec();
 
@@ -188,8 +190,8 @@ impl RFaultTree<String> {
             .map(|be| {
                 let mut new_roots = vec![be.to_string()];
                 let g = lasts_gates.iter().choose(&mut rng).unwrap();
-                let nid = ft.lookup_table.get(g).unwrap().to_owned();
-                let gate = ft.nodes.get(nid).unwrap();
+                let nid = ft_norm.lookup_table.get(g).unwrap().to_owned();
+                let gate = ft_norm.nodes.get(nid).unwrap();
 
                 let op = match &gate.kind {
                     NodeType::PlaceHolder(_, op, r) => {
@@ -208,16 +210,16 @@ impl RFaultTree<String> {
                     op
                 };
                 let mut new_node = Node::new(NodeType::PlaceHolder(g.to_owned(), op, new_roots));
-                new_node.set_formula(&ft.nodes);
-                ft.update_roots(new_node, nid);
+                new_node.set_formula(&ft_norm.nodes);
+                ft_norm.update_roots(new_node, nid);
             })
             .collect_vec();
 
         // Fill placeholders rearrenges the gates and set the correct types.
-        ft.fill_placeholders(true, true);
+        ft_norm.fill_placeholders(true, true);
 
         RFaultTree {
-            ft,
+            ft: ft_norm,
             _n_nodes: n_nodes,
             _config: config,
         }

@@ -1,4 +1,4 @@
-use crate::fault_trees::FaultTree;
+use crate::fault_tree::FaultTree;
 use crate::formula::CNFFormat;
 use itertools::Itertools;
 use std::io::Write;

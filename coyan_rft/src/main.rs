@@ -2,8 +2,8 @@ use clap::Parser;
 use coyan_fta::{formula::CNFFormat, solver::get_solver_from_path};
 use rand::Rng;
 use random_fault_trees::{RFTConfig, RFaultTree};
+use serde_json::json;
 use std::{fmt::Debug, str::FromStr, time::Instant};
-
 mod random_fault_trees;
 
 /// CMD Arguments
@@ -12,8 +12,10 @@ mod random_fault_trees;
     author = "Nazareno Garagiola",
     version = "0.2",
     about = "
-        Tool that translates a Fault Tree in GALILEO format into a CNF equivalent using the logical transformations. 
-        Requires: Sum(Gate rates) = 1
+        Module to create Random Fault Trees using discrete probabilities.
+        - |Basic Events| = n_nodes * rate_be.
+        - |Gates| = n_nodes - |Basic Events|
+        - Requires: Sum(Gate rates) = 1. 
     "
 )]
 struct Args {
@@ -26,19 +28,18 @@ struct Args {
     /// Number in (0,1]. Rate of Basic Events from the total amount of Nodes.
     #[arg(long, default_value_t = 0.5, requires = "rate_and")]
     rate_be: f64,
-    /// Number in (0,1]. Rate of AND gates from the total amount of Gate nodes.
+    /// Number in (0,1]. Rate of AND gates from the total amount of gates.
     #[arg(long, default_value_t = 0.5, requires = "rate_or")]
     rate_and: f64,
-    /// Number in (0,1]. Rate of OR gates from the total amount of Gate nodes.
-    #[arg(long, default_value_t = 0.5)] //, requires = "rate_vot")]
+    /// Number in (0,1]. Rate of OR gates from the total amount of gates.
+    #[arg(long, default_value_t = 0.5)]
     rate_or: f64,
-    /// Number in (0,1]. Rate of VOT gates from the total amount of Gate nodes.
-    /// If FT contains a VOT gate, cannot be processed and solved, Can be solved but after writing to dft.
+    /// Number in (0,1]. Rate of VOT gates from the total amount of gates.
+    /// If the FT contains a VOT gate, cannot be processed and solved, Can be solved but after writing to dft.
     #[arg(
         long,
         default_value_t = 0.0,
-        requires = "rate_be",
-        // conflicts_with = "solver_path"
+        conflicts_with = "solver_path",
     )]
     rate_vot: f64,
     ///Number in (0,1], multiplies the random generated float of the probability, so it can be a smaller probability.
@@ -55,7 +56,7 @@ struct Args {
     seed: Option<u64>,
     /// Solver path and arguments.
     /// First is the solvers path, then the prefix for the args and then the arguments
-    #[arg(short, long)] //, conflicts_with = "rate_vot")]
+    #[arg(short, long, conflicts_with = "rate_vot")]
     solver_path: Option<String>,
     /// Output format for the CNF formual. The format gives the extension to the file. Currently supports MC21 and MCC.
     #[arg(long, default_value = "MC21")]
@@ -86,15 +87,19 @@ fn main() {
         None => CNFFormat::MC21,
     };
 
-    let output_filename = format!("{}.dft", output_filename);
+    let output_filename = if !output_filename.ends_with(".dft") {
+        format!("{}.dft", output_filename)
+    } else {
+        output_filename
+    };
 
     let config = RFTConfig::from_vec(rates);
     let solver_cmd = &args.solver_path;
 
-    println!(
-        "Generating Random Fault Tree with {} nodes. Seed: {}. Saving dft in: {}",
-        n_nodes, seed, output_filename
-    );
+    // println!(
+    //     "Generating Random Fault Tree with {} nodes. Seed: {}. Saving dft in: {}",
+    //     n_nodes, seed, output_filename
+    // );
     let start = Instant::now();
     let rft = RFaultTree::new_random(
         n_nodes,
@@ -109,7 +114,12 @@ fn main() {
         Option::None => {
             rft.save_to_dft(output_filename);
             let duration = start.elapsed();
-            println!("Time elapsed: {:?}.", duration);
+            println!(
+                "{}",
+                json!({
+                    "time_elapsed": duration,
+                })
+            );
         }
         Option::Some(cmd) => {
             let solver = get_solver_from_path(&cmd);
@@ -120,7 +130,14 @@ fn main() {
 
             let duration = start.elapsed();
 
-            println!("{:?} ; {:?} ; {:?}", solver._name(), wmc, duration);
+            println!(
+                "{}",
+                json!({
+                    "solver": solver._name(),
+                    "tep": wmc,
+                    "time_elapsed": format!("{:?}", duration),
+                })
+            );
         }
     }
 }

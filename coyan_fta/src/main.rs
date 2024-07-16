@@ -1,21 +1,30 @@
-#[allow(dead_code)]
 use clap::Parser;
 use formula::CNFFormat;
 use itertools::Itertools;
 use rayon::prelude::*;
+use serde_json::json;
 use std::path::Path;
 use std::time::Instant;
 use std::{fmt::Debug, str::FromStr};
 
-mod fault_trees;
+mod fault_tree;
+mod fault_tree_normalizer;
 mod formula;
 mod nodes;
 mod solver;
 
-use crate::fault_trees::FaultTree;
+use crate::fault_tree::FaultTree;
 use crate::solver::*;
 
 #[derive(Parser, Debug)]
+#[command(
+    author = "Nazareno Garagiola",
+    version = "0.2",
+    about = "
+        Coyan is a Rust project that transforms Static Fault Trees into CNF equisatisfiables formulas. 
+        Then, with the use of a Model Counter, computes the Top Event Probabilty (TEP) of failure at one or more given time points.
+    "
+)]
 struct Arguments {
     #[clap(subcommand)]
     command: Command,
@@ -52,12 +61,9 @@ struct SolveCommand {
     #[arg(short, long, required = true)]
     input: String,
     /// Solver path and arguments.
-    /// Example: /solvers/gpmc or /solvers/sharpSAT
-    //#[arg(short, long, value_delimiter = ':')]
-    //solver_path: Vec<String>,
     #[arg(short, long)]
     solver_path: String,
-    /// Timebounds, creates a range of values according to the command arguments: [start, end, step].
+    /// Time bounds, creates a range of values according to the command arguments: [start, end, step].
     #[arg(
         long,
         value_delimiter = ' ',
@@ -65,13 +71,13 @@ struct SolveCommand {
         conflicts_with = "timepoint"
     )]
     timebounds: Option<Vec<f64>>,
-    /// Compute TEP of the FT a given timepoint
+    /// Compute TEP of the FT a given timepoint. Conflicts with `timebounds`.
     #[arg(long, default_value_t = 1.0, conflicts_with = "timebounds")]
     timepoint: f64,
-    /// Output format for the CNF formual. The format gives the extension to the file. Currently supports MC21 and MCC.
+    /// Output format for the CNF formula. The format gives the extension to the file. Support values `MC21` and `MCC` [default: `MC21`]
     #[arg(long, default_value = "MC21")]
     format: String,
-    /// Number of threads to use when timebounds are used.
+    /// Number of threads to use when time bounds are used.
     #[arg(long, default_value_t = 4)]
     num_threads: usize,
     /// Verbosity, if true, prints details at finish.
@@ -90,13 +96,13 @@ struct TranslateCommand {
     /// Output file, writes a .wcnf file.
     #[arg(short, long)]
     output: String,
-    /// Output format for the CNF formual. The format gives the extension to the file. Currently supports MC21 and MCC.
+    /// Output format for the CNF formula. The format gives the extension to the file. Support values `MC21` and `MCC` [default: `MC21`]
     #[arg(long, default_value = "MC21")]
     format: String,
     /// Verbosity, if true, prints more information
     #[arg(long, default_value_t = false)]
     verb: bool,
-    /// Timebounds, creates a range of values according to the command arguments: [start, end, step]. Conflicts with timepoint.
+    /// Time bounds, creates a range of values according to the command arguments: [start, end, step]. Conflicts with `timepoint`.
     #[arg(
         long,
         value_delimiter = ' ',
@@ -107,7 +113,7 @@ struct TranslateCommand {
     /// If provided, the weights will be written to a separate file.
     #[arg(long)]
     w_file: Option<String>,
-    /// Compute TEP of the FT a given timepoint. Conflicts with timebounds.
+    /// Compute TEP of the FT a given timepoint. Conflicts with `timebounds`.
     #[arg(long, default_value_t = 1.0, conflicts_with = "timebounds")]
     timepoint: f64,
     /// Simplify the FT by removing one children gates.
@@ -118,13 +124,22 @@ struct TranslateCommand {
 /// Outputs relevant information about the FT.
 fn ft_info(command: InfoCommand) {
     let dft_filename = command.input;
-    let mut ft: FaultTree<String> = FaultTree::new();
     let simplify = command.simplify;
-    ft.read_from_file(&dft_filename, simplify);
+    // let mut ft: FaultTree<String> = FaultTree::new();
+    let ft: FaultTree<String> = FaultTree::new_from_file(&dft_filename, simplify);
+    // ft.read_from_file(&dft_filename, simplify);
+    let path = Path::new(dft_filename.as_str());
+    let model_name = path.file_name().unwrap();
     let (num_be, num_gates, num_clauses) = ft.get_info();
-    println!("Number of Basic Events: {}", num_be);
-    println!("Number of Gates: {}", num_gates);
-    println!("Number of Clauses generated: {}", num_clauses);
+    println!(
+        "{}",
+        json!({
+            "model": model_name.to_str(),
+            "Basic Events":num_be,
+            "Gates":num_gates,
+            "Clauses generated":num_clauses,
+        })
+    );
 }
 
 /// Translates the FT explicit formula to a CNF file.
@@ -135,24 +150,28 @@ fn translate(command: TranslateCommand) {
     let timepoint = command.timepoint;
     let verbose = command.verb;
     let simplify = command.simplify;
+    let path = Path::new(dft_filename.as_str());
+    let model_name = path.file_name().unwrap();
     let format =
         CNFFormat::from_str(&command.format).expect("Unsupported format. Try MCC or MC21.");
 
-    let mut ft: FaultTree<String> = FaultTree::new();
+    // let mut ft: FaultTree<String> = FaultTree::new();
     let time_start = Instant::now();
-    if verbose {
-        println!("Processing file {}", dft_filename);
-    }
-    ft.read_from_file(&dft_filename, simplify);
+    let ft: FaultTree<String> = FaultTree::new_from_file(&dft_filename, simplify);
+    // ft.read_from_file(&dft_filename, simplify);
 
     match command.timebounds {
         None => {
             let cnf_path = format!("{}_t={}.wcnf", cnf_filename, timepoint);
             ft.dump_cnf_to_file(cnf_path, format, timepoint, w_file);
             let duration = time_start.elapsed();
-            if verbose {
-                println!("Time elapsed: {:?}.", duration)
-            }
+            println!(
+                "{}",
+                json!({
+                    "model": model_name.to_str(),
+                    "duration": format!("{:?}", duration),
+                })
+            );
         }
         Some(ts) => {
             let (start, end, step) = (ts[0], ts[1], ts[2]);
@@ -170,7 +189,13 @@ fn translate(command: TranslateCommand) {
                 ft.dump_cnf_to_file(cnf_path, format, t.to_owned(), w_file.clone());
                 let duration = time_start.elapsed();
                 if verbose {
-                    println!("Time elapsed: {:?}.", duration)
+                    println!(
+                        "{}",
+                        json!({
+                            "model": model_name.to_str(),
+                            "duration": format!("{:?}", duration),
+                        })
+                    );
                 }
             }
         }
@@ -194,32 +219,32 @@ fn compute_tep(command: SolveCommand) {
         .num_threads(num_workers)
         .build_global()
         .unwrap();
-    let mut ft: FaultTree<String> = FaultTree::new();
+    // let mut ft: FaultTree<String> = FaultTree::new();
     let time_start = Instant::now();
-    ft.read_from_file(&dft_filename, simplify);
-    if verbose {
-        println!("Processing file {}", dft_filename);
-    }
+    let ft: FaultTree<String> = FaultTree::new_from_file(&dft_filename, simplify);
+    // ft.read_from_file(&dft_filename, simplify);
     match command.timebounds {
         None => {
             let solver = get_solver_from_path(&solver_path);
-            if verbose {
-                println!(
-                    "Running Solver {} for timepoint {}",
-                    solver._name(),
-                    timepoint
-                );
-            }
             let tep = solver.compute_probabilty(&ft, format, timepoint);
             let duration = time_start.elapsed();
             if !verbose {
-                println!("System failure at timebound {:?} is {:?}", timepoint, tep)
+                println!(
+                    "{}",
+                    json!({"TEP": tep,
+                "timepoint": timepoint})
+                )
             } else {
                 let path = Path::new(dft_filename.as_str());
                 let model_name = path.file_name().unwrap();
                 println!(
-                    "Model: {:?}.\nTimebound: {:?}.\nProbability of failure: {:?}.\nTime elapsed: {:?}",
-                    model_name, timepoint, tep, duration
+                    "{}",
+                    json!({
+                        "model": model_name.to_str(),
+                        "timepoint": timepoint,
+                        "TEP": tep,
+                        "duration": format!("{:?}", duration),
+                    })
                 );
             };
         }
@@ -228,43 +253,48 @@ fn compute_tep(command: SolveCommand) {
             let n_steps = if step != 0.0 {
                 (end / step) as i64 + 1
             } else {
-                2
+                2   
             };
             let timebounds = (start as i64..n_steps)
                 .into_iter()
                 .map(|v| start + ((100 * v) as f64 * step).round() / 100.0)
                 .collect_vec();
             let _probs: Vec<(f64, f64)> = timebounds
-            .into_par_iter()
-            .filter_map(move |t| {
-                let ft = &ft;
-                if t > end {
-                    None
-                } else {
-                    let solver = get_solver_from_path(&solver_path);
-                    if verbose {
-                        println!("Running Solver {} for timepoint {}", solver._name(), t);
-                    }
-                    let wmc = solver.compute_probabilty(ft, format, t);
-                    let duration = time_start.elapsed();
-                    if !verbose {
-                        println!("System failure at timebound {:?} is {:?}", t, wmc)
+                .into_par_iter()
+                .filter_map(move |t| {
+                    let ft = &ft;
+                    if t > end {
+                        None
                     } else {
-                        let path = Path::new(dft_filename.as_str());
-                        let model_name = path.file_name().unwrap();
-                        println!(
-                            "Model: {:?}.\nTimebound: {:?}.\nProbability of failure: {:?}.\nTime elapsed: {:?}",
-                            model_name, t, wmc, duration
-                        );
-                    };
-                    Some((t, wmc))
-                }
-            })
-            .collect();
+                        let solver = get_solver_from_path(&solver_path);
+                        let tep = solver.compute_probabilty(ft, format, t);
+                        let duration = time_start.elapsed();
+                        if !verbose {
+                            println!(
+                                "{}",
+                                json!({"TEP": tep,
+                            "timepoint": t})
+                            )
+                        } else {
+                            let path = Path::new(dft_filename.as_str());
+                            let model_name = path.file_name().unwrap();
+                            println!(
+                                "{}",
+                                json!({
+                                    "model": model_name.to_str(),
+                                    "timepoint": timepoint,
+                                    "TEP": tep,
+                                    "duration": format!("{:?}", duration),
+                                })
+                            );
+                        };
+                        Some((t, tep))
+                    }
+                })
+                .collect();
         }
     }
 }
-
 
 fn main() {
     let arguments = Arguments::parse();

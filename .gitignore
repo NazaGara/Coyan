@@ -1,6 +1,8 @@
 /target
 /tests
 /results
+/benchmarks
 *.ipynb
 other*
 .tmp
+.vscode
