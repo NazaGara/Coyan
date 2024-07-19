@@ -19,7 +19,7 @@ mod random_fault_trees;
     "
 )]
 struct Args {
-    /// Total number of nodes
+    /// Total number of nodes.
     #[arg(short, long)]
     n_nodes: usize,
     /// Output file, writes .dft files.
@@ -36,11 +36,7 @@ struct Args {
     rate_or: f64,
     /// Number in (0,1]. Rate of VOT gates from the total amount of gates.
     /// If the FT contains a VOT gate, cannot be processed and solved, Can be solved but after writing to dft.
-    #[arg(
-        long,
-        default_value_t = 0.0,
-        conflicts_with = "solver_path",
-    )]
+    #[arg(long, default_value_t = 0.0, conflicts_with = "solver_path")]
     rate_vot: f64,
     ///Number in (0,1], multiplies the random generated float of the probability, so it can be a smaller probability.
     #[arg(long, default_value_t = 1e-4)]
@@ -51,7 +47,10 @@ struct Args {
     /// Specify the max number of children that a gate can have.
     #[arg(long, default_value_t = 5)]
     max_n_children: usize,
-    /// In which percentage of the last gates start to put the Basic Events if they were not used before.
+    /// Execution timeout for the WMC solver in seconds. 
+    #[arg(long, default_value_t = 100)]
+    timeout_s: u64,
+    /// In which percentage of the last gates start to put the Basic Events if they were not used before. [Default=random]
     #[arg(long, value_parser = clap::value_parser!(u64))]
     seed: Option<u64>,
     /// Solver path and arguments.
@@ -68,11 +67,8 @@ fn main() {
 
     let n_nodes = args.n_nodes;
     let rates = vec![args.rate_be, args.rate_and, args.rate_or, args.rate_vot];
-    let p_multiplier = args.prob_multiplier;
-    let perc_last = args.perc_last;
     let output_filename = args.output;
     let seed = args.seed;
-    let max_n_children = args.max_n_children;
 
     let seed = match seed {
         None => {
@@ -96,18 +92,14 @@ fn main() {
     let config = RFTConfig::from_vec(rates);
     let solver_cmd = &args.solver_path;
 
-    // println!(
-    //     "Generating Random Fault Tree with {} nodes. Seed: {}. Saving dft in: {}",
-    //     n_nodes, seed, output_filename
-    // );
     let start = Instant::now();
     let rft = RFaultTree::new_random(
         n_nodes,
         config,
-        p_multiplier,
-        perc_last,
+        args.prob_multiplier,
+        args.perc_last,
         seed,
-        max_n_children,
+        args.max_n_children,
     );
 
     match solver_cmd {
@@ -125,9 +117,7 @@ fn main() {
             let solver = get_solver_from_path(&cmd);
             rft.save_to_dft(output_filename);
             let ft = rft.extract_ft();
-
-            let wmc = solver.compute_probabilty(&ft, format, 1.0);
-
+            let wmc = solver.compute_probabilty(&ft, format, 1.0, args.timeout_s);
             let duration = start.elapsed();
 
             println!(

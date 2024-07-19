@@ -40,10 +40,11 @@ Commands:
     - `-s, --solver-path <SOLVER_PATH>`: Solver path and arguments. If the solver needs arguments, separate them using a colon. Example: `/solvers/gpmc:mode=1`
     - `-t, --timebounds <TIMEBOUNDS> <TIMEBOUNDS> <TIMEBOUNDS>`: Time bounds for the exponential models. It creates a range of values according to the command arguments: `[start, end, step]`. Conflicts with `timepoint`.
     - `--timepoint <TIMEPOINT>`: Compute Unreliability of the FT a given time point [default: 1]. Conflicts with `timebounds`.
+    - `--timeout-s <TIMEOUT_S>`: Execution timeout for the WMC solver in seconds. [Default: 300 (5 minutes)]
     - `--format <FORMAT>`: Output format for the CNF formula. Support values `MC21` and `MCC` [default: `MC21`]
     - `--num_threads  <NUM_THREADS>`: Number of threads to use when time bounds are used [default: 4].
     - `--simplify`: Simplify the FT by removing gates with only one child.
-    - `--verb`: Verbosity, if true, prints more details when finished. Default = false.
+    - `--verb`: Verbosity, if true, prints more details when finished. [Default: false]
     - `-h, --help`: Print help
 
 ## WMC solvers

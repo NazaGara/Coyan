@@ -69,12 +69,12 @@ impl FaultTreeNormalizer<String> {
                 [toplevel, name, ..] if toplevel.to_lowercase().as_str() == "toplevel" => {
                     root_name = name.replace("\"", "").replace(";", "").to_string();
                 }
-                [name, op, _args @ ..] if op.as_str().to_lowercase() == "not" => {
+                [name, op, args @ ..] if op.as_str().to_lowercase() == "not" => {
                     let name = name.replace("\"", "").replace(";", "");
                     if self.lookup_table.contains_key(&name) {
                         panic!("Name of Gate {} already in use.", name)
                     }
-                    let args = _args
+                    let args = args
                         .iter()
                         .filter_map(|a| {
                             if a.eq(";") {
@@ -106,7 +106,7 @@ impl FaultTreeNormalizer<String> {
                         filename
                     )
                 }
-                [name, op, _args @ ..]
+                [name, op, args @ ..]
                     if op.as_str().to_lowercase() == "or"
                         || op.as_str().to_lowercase() == "and"
                         || op.as_str().to_lowercase() == "xor"
@@ -116,7 +116,7 @@ impl FaultTreeNormalizer<String> {
                     if self.lookup_table.contains_key(&name) {
                         panic!("Name of Gate {} already in use.", name)
                     }
-                    let args = _args
+                    let args = args
                         .iter()
                         .filter_map(|a| {
                             if a.eq(";") {
@@ -152,7 +152,7 @@ impl FaultTreeNormalizer<String> {
                         self.add_node(name.to_string(), node, nid);
                     }
                 }
-                [name, args, _others @ ..] => {
+                [name, args, _others_args @ ..] => {
                     let name = name.replace("\"", "").replace(";", "");
                     if self.lookup_table.contains_key(&name) {
                         panic!("Name of Basic Event {} already in use.", name)

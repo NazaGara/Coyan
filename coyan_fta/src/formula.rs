@@ -25,12 +25,14 @@ impl FromStr for CNFFormat {
 
 /// A propositional logic formula.
 // #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Formula<A> {
     Atom(A),
     Not(Box<Self>),
     And(Vec<Self>),
     Or(Vec<Self>),
+    Xor(Vec<Self>),
     Vot(i64, Vec<Self>),
     _True,
     _False,
@@ -48,7 +50,15 @@ where
             Formula::_True => Formula::_False,
             Formula::And(args) => Formula::Or(args.iter().map(|a| a.negate()).collect_vec()),
             Formula::Or(args) => Formula::And(args.iter().map(|a| a.negate()).collect_vec()),
+            Formula::Xor(args) => {
+                // Or all args as is
+                let pos_args = Formula::And(args.clone());
+                // Or all args negated
+                let neg_args = Formula::And(args.iter().map(|a| a.negate()).collect_vec());
+                Formula::Or(vec![pos_args, neg_args])
+            },
             Formula::Vot(_k, _args) => todo!("Negations of VOT is not allowed at the moment."),
+            
         }
     }
     /// Translate the formula to a GALILEO style of formula
@@ -70,6 +80,11 @@ where
             Formula::Or(args) => {
                 let rec = args.iter().map(|a| a._formula_to_dft()).join(" ");
                 out.push_str("or ");
+                out += &rec;
+            }
+            Formula::Xor(args) => {
+                let rec = args.iter().map(|a| a._formula_to_dft()).join(" ");
+                out.push_str("xor ");
                 out += &rec;
             }
             Formula::Not(x) => {
@@ -105,7 +120,7 @@ where
         }
     }
 
-    /// Returns the number of clauses of a CNF formula.
+    /// Returns the number of clauses only for CNF formulas.
     pub fn num_clauses(&self) -> usize {
         match self {
             Formula::And(clauses) => clauses.len(),
@@ -119,6 +134,7 @@ where
         match self {
             Formula::And(args) => Some(args.to_vec()),
             Formula::Or(args) => Some(args.to_vec()),
+            Formula::Xor(args) => Some(args.to_vec()),
             Formula::Vot(_, args) => Some(args.to_vec()),
             _ => None,
         }
@@ -143,6 +159,10 @@ where
             Formula::Or(args) => {
                 arguments = args.to_vec();
                 sep = String::from(" V ")
+            }
+            Formula::Xor(args) => {
+                arguments = args.to_vec();
+                sep = String::from(" ⊕ ")
             }
             Formula::Not(x) => {
                 let mut text = String::from("-");

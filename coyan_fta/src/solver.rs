@@ -3,15 +3,27 @@ use crate::formula::CNFFormat;
 use itertools::Itertools;
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
 pub trait Solver {
     fn _name(&self) -> String;
     fn get_command(&self) -> String;
-    fn run_model(&self, ft: &FaultTree<String>, format: CNFFormat, timebound: f64) -> Output;
+    fn run_model(
+        &self,
+        ft: &FaultTree<String>,
+        format: CNFFormat,
+        timebound: f64,
+        timeout_s: u64,
+    ) -> Result<Output, &'static str>;
     fn get_tep(&self, result: Output) -> f64;
-    fn compute_probabilty(&self, ft: &FaultTree<String>, format: CNFFormat, timebound: f64) -> f64 {
-        let out = self.run_model(ft, format, timebound);
-        self.get_tep(out)
+    fn compute_probabilty(&self, ft: &FaultTree<String>, format: CNFFormat, timebound: f64, timeout_s: u64) -> f64 {
+        // let out = self.run_model(ft, format, timebound);
+        match self.run_model(ft, format, timebound, timeout_s){
+            Ok(value) => self.get_tep(value),
+            Err(msg) => panic!("{:?}", msg)
+        }
+        
     }
 }
 
@@ -71,15 +83,39 @@ impl Solver for SharpsatTDSolver {
         )
     }
 
-    fn run_model(&self, ft: &FaultTree<String>, format: CNFFormat, timebound: f64) -> Output {
+    fn run_model(
+        &self,
+        ft: &FaultTree<String>,
+        format: CNFFormat,
+        timebound: f64,
+        timeout_s: u64,
+    ) -> Result<Output, &'static str> {
         let tmp_ft_file = format!("{}/tmp_ft.cnf", self.tmpdir);
         ft.dump_cnf_to_file(tmp_ft_file.clone(), format, timebound, None);
 
         let solver_cmd = format!("{} ./{}", self.get_command(), tmp_ft_file);
-        let mut c: Command = Command::new("sh");
-        c.arg("-c");
-        c.arg(solver_cmd.clone());
-        c.output().expect("failed to execute solver")
+        // let mut c: Command = Command::new("sh");
+        // c.arg("-c");
+        // c.arg(solver_cmd.clone());
+        // c.output().expect("failed to execute solver")
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdout(Stdio::piped())
+            .arg(solver_cmd)
+            .spawn()
+            .expect("Failed to spawn child process");
+
+        match child.wait_timeout(Duration::from_secs(timeout_s)).unwrap() {
+            Some(_status) => Ok(child.wait_with_output().expect("Failed to read stdout")),
+            None => {
+                child.kill().unwrap();
+                let _ = child.wait().unwrap().code();
+                Err("Timeout of child process.")
+            }
+        }
     }
 
     fn get_tep(&self, result: Output) -> f64 {
@@ -90,6 +126,7 @@ impl Solver for SharpsatTDSolver {
             .filter(|l| l.starts_with("c s exact arb float"))
             .join("");
 
+        println!("RES LINE: {:?}", result_line);
         result_line
             .split(" ")
             .last()
@@ -140,7 +177,13 @@ impl Solver for GPMCSolver {
         )
     }
 
-    fn run_model(&self, ft: &FaultTree<String>, format: CNFFormat, timebound: f64) -> Output {
+    fn run_model(
+        &self,
+        ft: &FaultTree<String>,
+        format: CNFFormat,
+        timebound: f64,
+        timeout_s: u64,
+    ) -> Result<Output, &'static str> {
         let solver_cmd = self.get_command();
         let model_text = ft.dump_cnf(format, timebound);
         let mut child = Command::new("sh")
@@ -159,7 +202,14 @@ impl Solver for GPMCSolver {
                 .expect("Failed to write to stdin");
         });
 
-        child.wait_with_output().expect("Failed to read stdout")
+        match child.wait_timeout(Duration::from_secs(timeout_s)).unwrap() {
+            Some(_status) => Ok(child.wait_with_output().expect("Failed to read stdout")),
+            None => {
+                child.kill().unwrap();
+                let _ = child.wait().unwrap().code();
+                Err("Timeout of chiuld process.")
+            }
+        }
     }
     fn get_tep(&self, result: Output) -> f64 {
         let stdout =
@@ -202,7 +252,13 @@ impl Solver for ADDMCSolver {
         format!("{}", self.path)
     }
 
-    fn run_model(&self, ft: &FaultTree<String>, format: CNFFormat, timebound: f64) -> Output {
+    fn run_model(
+        &self,
+        ft: &FaultTree<String>,
+        format: CNFFormat,
+        timebound: f64,
+        timeout_s: u64,
+    ) -> Result<Output, &'static str> {
         let solver_cmd = self.get_command();
         let model_text = ft.dump_cnf(format, timebound);
         let mut child = Command::new("sh")
@@ -221,7 +277,14 @@ impl Solver for ADDMCSolver {
                 .expect("Failed to write to stdin");
         });
 
-        child.wait_with_output().expect("Failed to read stdout")
+        match child.wait_timeout(Duration::from_secs(timeout_s)).unwrap() {
+            Some(_status) => Ok(child.wait_with_output().expect("Failed to read stdout")),
+            None => {
+                child.kill().unwrap();
+                let _ = child.wait().unwrap().code();
+                Err("Timeout of chiuld process.")
+            }
+        }
     }
     fn get_tep(&self, result: Output) -> f64 {
         let stdout =

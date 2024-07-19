@@ -5,7 +5,7 @@ use std::fmt::{self, Debug, Display};
 
 index_vec::define_index_type! {
     pub struct NodeId = usize;
-    MAX_INDEX = i64::max_value() as usize;
+    MAX_INDEX = usize::MAX;
     DISABLE_MAX_INDEX_CHECK = cfg!(not(debug_assertions));
 
 }
@@ -32,7 +32,7 @@ pub enum NodeType<T> {
     /// Arguments: k, args of gate
     Vot(i64, Vec<NodeId>),
     /// Arguments: name, op, args of gate
-    PlaceHolder(T, T, Vec<T>),
+    PlaceHolder(T, String, Vec<T>),
 }
 
 /// Implementation of the nodes.

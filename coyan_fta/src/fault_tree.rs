@@ -5,11 +5,12 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::atomic::AtomicUsize;
 use std::fs::read_to_string;
-// use std::collections::HashMap;
 
 use crate::formula::{CNFFormat, Formula};
 use crate::nodes;
 use crate::fault_tree_normalizer::FaultTreeNormalizer;
+use crate::modularizer::get_modules;
+use crate::solver::Solver;
 
 /// Helper reader function.
 fn _read_lines(filename: &str) -> Vec<String> {
@@ -23,7 +24,6 @@ fn _read_lines(filename: &str) -> Vec<String> {
 impl<T> From<FaultTreeNormalizer<T>> for FaultTree::<T>{
     fn from(ft_norm: FaultTreeNormalizer<T>) -> Self {
         FaultTree::<T> {
-            // lookup_table: ft_norm.lookup_table,
             nodes: ft_norm.nodes,
             root_id: ft_norm.root_id,
             node_counter: ft_norm.node_counter,
@@ -31,10 +31,22 @@ impl<T> From<FaultTreeNormalizer<T>> for FaultTree::<T>{
     }
 }
 
+impl<T> Clone for FaultTree<T>  where
+T: Clone,
+{
+    fn clone(&self) -> Self {
+        FaultTree {
+            nodes: self.nodes.clone(),
+            root_id: self.root_id.clone(),
+            node_counter: AtomicUsize::new(self.node_counter.load(std::sync::atomic::Ordering::Relaxed)),
+        }
+    }
+}
+
 /// A Fault Tree representation in Rust.
 pub struct FaultTree<T> {
     // lookup_table: HashMap<String, NodeId>,
-    nodes: IndexVec<NodeId, Node<T>>,
+    pub nodes: IndexVec<NodeId, Node<T>>,
     pub root_id: NodeId,
     node_counter: AtomicUsize,
 }
@@ -42,11 +54,11 @@ pub struct FaultTree<T> {
 
 /// Internal representation of a Fault Tree.
 /// Can be created empty or read from a file using the Normalizer.
-/// They have some extra charactersistics:
+/// They have some extra details:
 /// - Handle the logic of the Tseitin Encoding
 /// - Do not have information about names of nodes
 /// - Do not have VOT gates
-/// - DO not have negations in argujments, but in separeted gates.
+/// - Do not have negations in arguments, but in separeted gates.
 impl FaultTree<String> {
     pub fn _empty() -> Self {
         FaultTree {
@@ -60,6 +72,10 @@ impl FaultTree<String> {
         let mut ft_norm = FaultTreeNormalizer::new();
         ft_norm.read_from_file(filename, simplify);
         FaultTree::from(ft_norm)
+    }
+
+    pub fn _set_root(&mut self, new_root_id : NodeId){
+        self.root_id = new_root_id;
     }
 
     pub fn get_count(&self) -> usize {
@@ -120,7 +136,7 @@ impl FaultTree<String> {
         &self,
         filename: String,
         format: CNFFormat,
-        timebound: f64,
+        timepoint: f64,
         w_file: Option<String>,
     ) {
         let cnf_formula = self.apply_tseitin();
@@ -139,7 +155,7 @@ impl FaultTree<String> {
             ),
         };
 
-        let (gate_weights, be_weights) = self.get_weights(weight_start, timebound);
+        let (gate_weights, be_weights) = self.get_weights(weight_start, timepoint);
         let be_str = be_weights.join("\n");
         let gate_str = gate_weights.join("\n");
 
@@ -177,7 +193,7 @@ impl FaultTree<String> {
         }
     }
 
-    pub fn dump_cnf(&self, format: CNFFormat, timebound: f64) -> String {
+    pub fn dump_cnf(&self, format: CNFFormat, timepoint: f64) -> String {
         let cnf_formula = self.apply_tseitin();
         let text_formula = cnf_formula.to_text();
         let n_vars = self.get_count();
@@ -194,7 +210,7 @@ impl FaultTree<String> {
             ),
         };
 
-        let (gate_weights, be_weights) = self.get_weights(weight_start, timebound);
+        let (gate_weights, be_weights) = self.get_weights(weight_start, timepoint);
         let be_str = be_weights.join("\n");
         let gate_str = gate_weights.join("\n");
 
@@ -216,7 +232,7 @@ impl FaultTree<String> {
     }
 
     /// Gives the weights in DIMACS format for the Gates and of the BE respectively.
-    fn get_weights(&self, weight_start: String, timebound: f64) -> (Vec<String>, Vec<String>) {
+    fn get_weights(&self, weight_start: String, timepoint: f64) -> (Vec<String>, Vec<String>) {
         let n_vars = self.get_count();
         // We see which NodeId do not have the weights and set them to 1.
         // Only the BasicEvents Nodes have a fixed weight.
@@ -258,7 +274,7 @@ impl FaultTree<String> {
                     let prob: f64 = if method.to_lowercase().eq("prob") {
                         *value
                     } else if method.to_lowercase().eq("lambda") {
-                        1.0 - (-value * timebound).exp()
+                        1.0 - (-value * timepoint).exp()
                     } else {
                         panic!("Unsupported distribution of Basic Events. Try 'lambda' (Exponential) or 'prob' (Discrete).")
                     };
@@ -277,4 +293,35 @@ impl FaultTree<String> {
             .collect_vec();
         (gate_weights, be_weights)
     }
+
+    /// Update the roots of a Node in the nodes fields.
+    pub fn update_roots(&mut self, new_node: Node<String>, nid: NodeId) {
+        self.nodes.remove(nid);
+        self.nodes.insert(nid, new_node);
+    }
+
+    pub fn modularize_ft(&mut self) -> Vec<NodeId>{
+        get_modules(self)
+    }
+
+    //Progress bar if verb? 
+    pub fn replace_modules(&mut self, solver: &Box<dyn Solver>, module_ids : Vec<NodeId>, format: CNFFormat, timepoint : f64, timeout_s : u64){
+        println!("#Modules: {:?}", module_ids.len());
+        let mut i = 1;
+        for mod_id in module_ids.iter() {
+            let mut mod_ft = self.clone();
+            mod_ft._set_root(*mod_id);
+
+            println!("Solving module {:?} ({})", mod_id, i);
+            i += 1;
+            let tep = solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s);
+            let repl_node = Node::new(NodeType::BasicEvent(
+                format!("repl_node_{}", mod_id),
+                String::from("prob"),
+                tep,
+            ));
+            self.update_roots(repl_node, *mod_id);
+        }
+   }
+
 }
