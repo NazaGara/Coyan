@@ -35,7 +35,8 @@ Commands:
     - `-h, --help`: Print help
 
 - `solve`: Executes a Solver to obtain the TEP of the FT at a given time point or time bounds.
-  - Supported Solvers: `GPMC` and `ADDMC`.
+  - Supported Solvers: `GPMC`, `SharpSAT-TD`and `ADDMC`.
+    - `SharpSAT-TD` uses the `.tmp` directory internally.
   - OPTIONS:
     - `-s, --solver-path <SOLVER_PATH>`: Solver path and arguments. If the solver needs arguments, separate them using a colon. Example: `/solvers/gpmc:mode=1`
     - `-t, --timebounds <TIMEBOUNDS> <TIMEBOUNDS> <TIMEBOUNDS>`: Time bounds for the exponential models. It creates a range of values according to the command arguments: `[start, end, step]`. Conflicts with `timepoint`.

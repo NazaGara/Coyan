@@ -142,12 +142,12 @@ struct ModCommand {
     // /// Output format for the CNF formula. The format gives the extension to the file. Support values `MC21` and `MCC` [default: `MC21`]
     #[arg(long, default_value = "MC21")]
     format: String,
-    // /// Number of threads to use when time bounds are used.
-    // #[arg(long, default_value_t = 4)]
-    // num_threads: usize,
-    // /// Verbosity, if true, prints details at finish.
-    // #[arg(long, default_value_t = false)]
-    // verb: bool,
+    /// Number of threads to run in parallel to repalce BEs.
+    #[arg(long, default_value_t = 1)]
+    num_threads: usize,
+    /// Verbosity, if true, prints details at finish.
+    #[arg(long, default_value_t = true)]
+    display: bool,
     /// Simplify the FT by removing one children gates.
     #[arg(long, default_value_t = true)]
     simplify: bool,
@@ -243,10 +243,8 @@ fn compute_tep(command: SolveCommand) {
         .num_threads(command.num_threads)
         .build_global()
         .unwrap();
-    // let mut ft: FaultTree<String> = FaultTree::new();
     let time_start = Instant::now();
     let ft = FaultTree::new_from_file(&dft_filename, command.simplify);
-    // ft.read_from_file(&dft_filename, simplify);
     match command.timebounds {
         None => {
             let solver: Box<dyn Solver> = get_solver_from_path(&solver_path);
@@ -325,9 +323,14 @@ fn modularize_ft(command: ModCommand) {
     let format =
         CNFFormat::from_str(&command.format).expect("Unsupported format. Try MCC or MC21.");
     let solver_path = command.solver_path;
-    let solver: Box<dyn Solver> = get_solver_from_path(&solver_path);
+    let solver: Box<dyn Solver + Sync> = get_solver_from_path(&solver_path);
     let path = Path::new(dft_filename.as_str());
     let model_name = path.file_name().unwrap();
+
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(command.num_threads)
+        .build_global()
+        .unwrap();
 
     let mut ft = FaultTree::new_from_file(&dft_filename, command.simplify);
     let time_start = Instant::now();
@@ -336,17 +339,17 @@ fn modularize_ft(command: ModCommand) {
     let n_modules = module_ids.len();
 
     module_ids.reverse();
-    
+
     ft.replace_modules(
         &solver,
         module_ids,
         format,
         command.timepoint,
         command.timeout_s,
+        command.num_threads,
+        command.display,
     );
 
-
-    println!("Modules solved and replaced.");
     let tep = solver.compute_probabilty(&ft, format, command.timepoint, command.timeout_s);
     let elapsed = time_start.elapsed();
     println!(

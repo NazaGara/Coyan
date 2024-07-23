@@ -1,14 +1,14 @@
 use crate::fault_tree::FaultTree;
 use crate::formula::CNFFormat;
 use itertools::Itertools;
+use rayon::current_thread_index;
+use std::fs;
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
-use std::time::Duration;
-use wait_timeout::ChildExt;
 
 pub trait Solver {
     fn _name(&self) -> String;
-    fn get_command(&self) -> String;
+    fn get_command(&self, timeout_s: u64) -> String;
     fn run_model(
         &self,
         ft: &FaultTree<String>,
@@ -17,17 +17,22 @@ pub trait Solver {
         timeout_s: u64,
     ) -> Result<Output, &'static str>;
     fn get_tep(&self, result: Output) -> f64;
-    fn compute_probabilty(&self, ft: &FaultTree<String>, format: CNFFormat, timebound: f64, timeout_s: u64) -> f64 {
+    fn compute_probabilty(
+        &self,
+        ft: &FaultTree<String>,
+        format: CNFFormat,
+        timebound: f64,
+        timeout_s: u64,
+    ) -> f64 {
         // let out = self.run_model(ft, format, timebound);
-        match self.run_model(ft, format, timebound, timeout_s){
+        match self.run_model(ft, format, timebound, timeout_s) {
             Ok(value) => self.get_tep(value),
-            Err(msg) => panic!("{:?}", msg)
+            Err(msg) => panic!("{:?}", msg),
         }
-        
     }
 }
 
-pub fn get_solver_from_path(path: &str) -> Box<dyn Solver> {
+pub fn get_solver_from_path(path: &str) -> Box<dyn Solver + Sync> {
     match path.to_ascii_lowercase() {
         x if x.contains("sharpsat") => Box::new(SharpsatTDSolver::new(path)),
         x if x.contains("addmc") => Box::new(ADDMCSolver::new(path)),
@@ -76,10 +81,10 @@ impl Solver for SharpsatTDSolver {
         String::from("SharpSAT-TD")
     }
 
-    fn get_command(&self) -> String {
+    fn get_command(&self, timeout_s: u64) -> String {
         format!(
-            "{} -WE -decot {} -decow {} -tmpdir {} -prec {} -cs {}",
-            self.path, self.decot, self.decow, self.tmpdir, self.precision, self.cs
+            "timeout -s KILL {}s {} -WE -decot {} -decow {} -tmpdir {} -prec {} -cs {}",
+            timeout_s, self.path, self.decot, self.decow, self.tmpdir, self.precision, self.cs
         )
     }
 
@@ -90,16 +95,14 @@ impl Solver for SharpsatTDSolver {
         timebound: f64,
         timeout_s: u64,
     ) -> Result<Output, &'static str> {
-        let tmp_ft_file = format!("{}/tmp_ft.cnf", self.tmpdir);
+        let tmp_ft_file = match current_thread_index(){
+            None => format!("{}/tmp_ft.cnf", self.tmpdir),
+            Some(i) => format!("{}/tmp_ft_{}.cnf", self.tmpdir, i.to_string())
+        };
         ft.dump_cnf_to_file(tmp_ft_file.clone(), format, timebound, None);
+        let solver_cmd = format!("{} ./{}", self.get_command(timeout_s), tmp_ft_file);
 
-        let solver_cmd = format!("{} ./{}", self.get_command(), tmp_ft_file);
-        // let mut c: Command = Command::new("sh");
-        // c.arg("-c");
-        // c.arg(solver_cmd.clone());
-        // c.output().expect("failed to execute solver")
-
-        let mut child = Command::new("sh")
+        let child = Command::new("sh")
             .arg("-c")
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())
@@ -108,14 +111,28 @@ impl Solver for SharpsatTDSolver {
             .spawn()
             .expect("Failed to spawn child process");
 
-        match child.wait_timeout(Duration::from_secs(timeout_s)).unwrap() {
-            Some(_status) => Ok(child.wait_with_output().expect("Failed to read stdout")),
-            None => {
-                child.kill().unwrap();
-                let _ = child.wait().unwrap().code();
-                Err("Timeout of child process.")
+        match child.wait_with_output() {
+            Ok(out) => {
+                let stderr = String::from_utf8(out.stderr.clone())
+                    .unwrap()
+                    .to_lowercase();
+                if stderr.eq("") {
+                    // empty means nothing went wrong. Cleand and go next.
+                    let _ = fs::remove_file(tmp_ft_file);
+                    Ok(out)
+                } else if stderr.eq("killed\n") {
+                    // If it has something, check if is the killed signal
+                    Err("Execution timeout.")
+                } else {
+                    ft.dump_cnf_to_file(String::from("lala.dft"), format, timebound, None);
+                    println!("{:?}", stderr);
+                    Err("Something went wrong...")
+                }
             }
+            Err(_err) => Err("Solver Process had an error."),
         }
+        
+        
     }
 
     fn get_tep(&self, result: Output) -> f64 {
@@ -126,7 +143,6 @@ impl Solver for SharpsatTDSolver {
             .filter(|l| l.starts_with("c s exact arb float"))
             .join("");
 
-        println!("RES LINE: {:?}", result_line);
         result_line
             .split(" ")
             .last()
@@ -170,10 +186,10 @@ impl Solver for GPMCSolver {
         String::from("GPMC")
     }
 
-    fn get_command(&self) -> String {
+    fn get_command(&self, timeout_s: u64) -> String {
         format!(
-            "{} -mode={} -cs={} -prec={}",
-            self.path, self.mode, self.cs, self.prec
+            "timeout -s KILL {}s {} -mode={} -cs={} -prec={}",
+            timeout_s, self.path, self.mode, self.cs, self.prec
         )
     }
 
@@ -184,7 +200,7 @@ impl Solver for GPMCSolver {
         timebound: f64,
         timeout_s: u64,
     ) -> Result<Output, &'static str> {
-        let solver_cmd = self.get_command();
+        let solver_cmd = self.get_command(timeout_s);
         let model_text = ft.dump_cnf(format, timebound);
         let mut child = Command::new("sh")
             .arg("-c")
@@ -195,20 +211,27 @@ impl Solver for GPMCSolver {
             .spawn()
             .expect("Failed to spawn child process");
 
-        let mut stdin = child.stdin.take().expect("Failed to open stdin");
-        std::thread::spawn(move || {
-            stdin
-                .write_all(model_text.as_bytes())
-                .expect("Failed to write to stdin");
-        });
+        let stdin = child.stdin.as_mut().expect("Failed to open stdin");
+        stdin
+            .write_all(model_text.as_bytes())
+            .expect("Failed to write to stdin");
 
-        match child.wait_timeout(Duration::from_secs(timeout_s)).unwrap() {
-            Some(_status) => Ok(child.wait_with_output().expect("Failed to read stdout")),
-            None => {
-                child.kill().unwrap();
-                let _ = child.wait().unwrap().code();
-                Err("Timeout of chiuld process.")
+        match child.wait_with_output() {
+            Ok(out) => {
+                let stderr = String::from_utf8(out.stderr.clone())
+                    .unwrap()
+                    .to_lowercase();
+                if stderr.eq("") {
+                    Ok(out)
+                } else if stderr.eq("killed\n") {
+                    // If it has something, check if is the killed signal
+                    Err("Execution timeout.")
+                } else {
+                    println!("{:?}", stderr);
+                    Err("Something went wrong.")
+                }
             }
+            Err(_err) => Err("Solver Process had an error."),
         }
     }
     fn get_tep(&self, result: Output) -> f64 {
@@ -248,8 +271,8 @@ impl Solver for ADDMCSolver {
         String::from("ADDMC")
     }
 
-    fn get_command(&self) -> String {
-        format!("{}", self.path)
+    fn get_command(&self, timeout_s: u64) -> String {
+        format!("timeout -s KILL {}s {}", timeout_s, self.path)
     }
 
     fn run_model(
@@ -259,7 +282,7 @@ impl Solver for ADDMCSolver {
         timebound: f64,
         timeout_s: u64,
     ) -> Result<Output, &'static str> {
-        let solver_cmd = self.get_command();
+        let solver_cmd = self.get_command(timeout_s);
         let model_text = ft.dump_cnf(format, timebound);
         let mut child = Command::new("sh")
             .arg("-c")
@@ -270,20 +293,28 @@ impl Solver for ADDMCSolver {
             .spawn()
             .expect("Failed to spawn child process");
 
-        let mut stdin = child.stdin.take().expect("Failed to open stdin");
-        std::thread::spawn(move || {
-            stdin
-                .write_all(model_text.as_bytes())
-                .expect("Failed to write to stdin");
-        });
+        let stdin = child.stdin.as_mut().expect("Failed to open stdin");
+        stdin
+            .write_all(model_text.as_bytes())
+            .expect("Failed to write to stdin");
 
-        match child.wait_timeout(Duration::from_secs(timeout_s)).unwrap() {
-            Some(_status) => Ok(child.wait_with_output().expect("Failed to read stdout")),
-            None => {
-                child.kill().unwrap();
-                let _ = child.wait().unwrap().code();
-                Err("Timeout of chiuld process.")
+        match child.wait_with_output() {
+            Ok(out) => {
+                let stderr = String::from_utf8(out.stderr.clone())
+                    .unwrap()
+                    .to_lowercase();
+                if stderr.eq("") {
+                    // empty means nothing went wrong
+                    Ok(out)
+                } else if stderr.eq("killed\n") {
+                    // If it has something, check if is the killed signal
+                    Err("Execution timeout.")
+                } else {
+                    println!("{:?}", stderr);
+                    Err("Something went wrong.")
+                }
             }
+            Err(_err) => Err("Solver Process had an error."),
         }
     }
     fn get_tep(&self, result: Output) -> f64 {

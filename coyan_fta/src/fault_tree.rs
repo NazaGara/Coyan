@@ -1,6 +1,8 @@
 use index_vec::IndexVec;
+use indicatif::ParallelProgressIterator;
 use itertools::Itertools;
 use nodes::{Node, NodeId, NodeType};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::fs::File;
 use std::io::Write;
 use std::sync::atomic::AtomicUsize;
@@ -304,24 +306,72 @@ impl FaultTree<String> {
         get_modules(self)
     }
 
-    //Progress bar if verb? 
-    pub fn replace_modules(&mut self, solver: &Box<dyn Solver>, module_ids : Vec<NodeId>, format: CNFFormat, timepoint : f64, timeout_s : u64){
-        println!("#Modules: {:?}", module_ids.len());
-        let mut i = 1;
-        for mod_id in module_ids.iter() {
-            let mut mod_ft = self.clone();
-            mod_ft._set_root(*mod_id);
-
-            println!("Solving module {:?} ({})", mod_id, i);
-            i += 1;
-            let tep = solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s);
-            let repl_node = Node::new(NodeType::BasicEvent(
-                format!("repl_node_{}", mod_id),
-                String::from("prob"),
-                tep,
-            ));
-            self.update_roots(repl_node, *mod_id);
+    /// Be careful with the procvided number of threads, for large models (~2000 basic events) is easy for the solver to run out of memory.
+    pub fn replace_modules(&mut self,
+        solver: &Box<dyn Solver + Sync>,
+        module_ids: Vec<NodeId>,
+        format: CNFFormat,
+        timepoint: f64,
+        timeout_s: u64,
+        num_workers: usize,
+        display: bool) {
+        
+        // Chunk size should be related to the FT, not to the #threads.
+        // But, to exploit parallelism, It should also hold that chunk_size > #num_threads
+        let chunk_size = std::cmp::max(module_ids.len().div_ceil(10), num_workers);
+        if display {
+            println!("Running {:?} modules, over {} threads, in chunks of size {}.", module_ids.len(), num_workers, chunk_size);
+            // Compute the modules by chunks, could be more efficient if we take consideration of depth
+            for chunk in module_ids.chunks(chunk_size).into_iter(){
+                // let to_replace: Vec<(NodeId, Node<String>)> = chunk.par_iter().progress_count(chunk_size as u64).map(|&mod_id|{
+                let to_replace: Vec<(NodeId, Node<String>)> = chunk.par_iter().panic_fuse().progress().map(|&mod_id|{
+                    let mut mod_ft = self.clone();
+                    mod_ft._set_root(mod_id);
+                    let tep = solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s);
+                    let repl_node = Node::new(NodeType::BasicEvent(
+                        format!("repl_node_{}", mod_id),
+                        String::from("prob"),
+                        tep,
+                    ));
+                    (mod_id, repl_node)
+                }).collect();
+                for (mod_id, repl_node) in to_replace.into_iter(){
+                    self.update_roots(repl_node, mod_id);
+                }
+            }
+        } else {
+            for chunk in module_ids.chunks(chunk_size).into_iter(){
+                let to_replace: Vec<(NodeId, Node<String>)> = chunk.par_iter().map(|&mod_id|{
+                    let mut mod_ft = self.clone();
+                    mod_ft._set_root(mod_id);
+    
+                    let tep = solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s);
+                    let repl_node = Node::new(NodeType::BasicEvent(
+                        format!("repl_node_{}", mod_id),
+                        String::from("prob"),
+                        tep,
+                    ));
+                    (mod_id, repl_node)
+                }).collect();
+                for (mod_id, repl_node) in to_replace.into_iter(){
+                    self.update_roots(repl_node, mod_id);
+                }
+            }
         }
-   }
-
+    }
+    
 }
+
+// for mod_id in module_ids.iter() {
+//     let mut mod_ft = self.clone();
+//     mod_ft._set_root(*mod_id);
+//     let tep = solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s);
+//     let repl_node = Node::new(NodeType::BasicEvent(
+//         format!("repl_node_{}", mod_id),
+//         String::from("prob"),
+//         tep,
+//     ));
+//     self.update_roots(repl_node, *mod_id);
+// }
+
+
