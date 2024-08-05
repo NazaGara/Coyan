@@ -56,9 +56,8 @@ where
                 // Or all args negated
                 let neg_args = Formula::And(args.iter().map(|a| a.negate()).collect_vec());
                 Formula::Or(vec![pos_args, neg_args])
-            },
+            }
             Formula::Vot(_k, _args) => todo!("Negations of VOT is not allowed at the moment."),
-            
         }
     }
     /// Translate the formula to a GALILEO style of formula

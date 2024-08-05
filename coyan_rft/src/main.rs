@@ -47,7 +47,7 @@ struct Args {
     /// Specify the max number of children that a gate can have.
     #[arg(long, default_value_t = 5)]
     max_n_children: usize,
-    /// Execution timeout for the WMC solver in seconds. 
+    /// Execution timeout for the WMC solver in seconds.
     #[arg(long, default_value_t = 100)]
     timeout_s: u64,
     /// In which percentage of the last gates start to put the Basic Events if they were not used before. [Default=random]
@@ -109,7 +109,7 @@ fn main() {
             println!(
                 "{}",
                 json!({
-                    "time_elapsed": duration,
+                    "time_elapsed": format!("{:?}", duration),
                 })
             );
         }
@@ -117,7 +117,7 @@ fn main() {
             let solver = get_solver_from_path(&cmd);
             rft.save_to_dft(output_filename);
             let ft = rft.extract_ft();
-            let wmc = solver.compute_probabilty(&ft, format, 1.0, args.timeout_s);
+            let wmc = solver.compute_probabilty(&ft, format, 1.0, args.timeout_s, false);
             let duration = start.elapsed();
 
             println!(

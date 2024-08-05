@@ -40,6 +40,26 @@ impl<T> NodeType<T>
 where
     T: Clone + Debug,
 {
+    pub fn get_method(&self) -> String {
+        match self {
+            NodeType::BasicEvent(_, m, _) => m.to_owned(),
+            _ => panic!("Get Method only available for Basic Events"),
+        }
+    }
+    pub fn get_prob(&self) -> f64 {
+        match self {
+            NodeType::BasicEvent(_, _, p) => p.clone(),
+            _ => panic!("Get Method only available for Basic Events"),
+        }
+    }
+
+    pub fn is_or(&self) -> bool {
+        match self {
+            NodeType::Or(_) => true,
+            _ => false,
+        }
+    }
+
     /// Allows to obtain a formula from the nodetype by checking the vec of node ids.
     pub fn _get_formula(&self, nodes: &IndexVec<NodeId, Node<T>>) -> Formula<T> {
         if nodes.is_empty() {
@@ -219,10 +239,7 @@ where
     /// Apply the Tseitin transformation for the Node, depending on the type of node
     /// will use different rules.
     /// Look that the output type is a Formula of NodeIds, ready for be used in the CNF.
-    pub fn tseitin_transformation(
-        &self,
-        self_id: NodeId,
-    ) -> Formula<NodeId> {
+    pub fn tseitin_transformation(&self, self_id: NodeId) -> Formula<NodeId> {
         match &self.kind {
             NodeType::PlaceHolder(_, _, _) => {
                 panic!("Cant apply Tseitin transform to placeholder node.")

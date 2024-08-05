@@ -1,10 +1,12 @@
 use crate::fault_tree::FaultTree;
 use crate::formula::CNFFormat;
 use itertools::Itertools;
-use rayon::current_thread_index;
-use std::fs;
+use rand::distributions::Alphanumeric;
+use rand::Rng;
+use std::fs::{self, File};
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
+use std::time::Instant;
 
 pub trait Solver {
     fn _name(&self) -> String;
@@ -15,6 +17,7 @@ pub trait Solver {
         format: CNFFormat,
         timebound: f64,
         timeout_s: u64,
+        preprocess: bool,
     ) -> Result<Output, &'static str>;
     fn get_tep(&self, result: Output) -> f64;
     fn compute_probabilty(
@@ -23,13 +26,22 @@ pub trait Solver {
         format: CNFFormat,
         timebound: f64,
         timeout_s: u64,
+        preprocess: bool,
     ) -> f64 {
-        // let out = self.run_model(ft, format, timebound);
-        match self.run_model(ft, format, timebound, timeout_s) {
-            Ok(value) => self.get_tep(value),
+        let top_is_or = ft.nodes[ft.root_id].kind.is_or();
+        match self.run_model(ft, format, timebound, timeout_s, preprocess) {
+            Ok(value) => {
+                let wmc_res = self.get_tep(value);
+                if top_is_or {
+                    1.0 - wmc_res
+                } else {
+                    wmc_res
+                }
+            }
             Err(msg) => panic!("{:?}", msg),
         }
     }
+    fn _set_cache_size(&mut self, new_cs: usize);
 }
 
 pub fn get_solver_from_path(path: &str) -> Box<dyn Solver + Sync> {
@@ -64,15 +76,11 @@ impl SharpsatTDSolver {
             path: String::from(path),
             // we: true,
             decot: 1,
-            decow: 50,
+            decow: 1,
             tmpdir: String::from(".tmp"),
             precision: 20,
             cs: 3500,
         }
-    }
-
-    fn _set_cache_size(&mut self, new_cs: usize) {
-        self.cs = new_cs
     }
 }
 
@@ -88,18 +96,27 @@ impl Solver for SharpsatTDSolver {
         )
     }
 
+    fn _set_cache_size(&mut self, new_cs: usize) {
+        self.cs = new_cs
+    }
+
     fn run_model(
         &self,
         ft: &FaultTree<String>,
         format: CNFFormat,
         timebound: f64,
         timeout_s: u64,
+        preprocess: bool,
     ) -> Result<Output, &'static str> {
-        let tmp_ft_file = match current_thread_index(){
-            None => format!("{}/tmp_ft.cnf", self.tmpdir),
-            Some(i) => format!("{}/tmp_ft_{}.cnf", self.tmpdir, i.to_string())
-        };
-        ft.dump_cnf_to_file(tmp_ft_file.clone(), format, timebound, None);
+        // Set unique tmp name for each thread. With 5 char the chance of taking a name in use is 26⁵.
+        let rnd_ft_file: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(5)
+            .map(char::from)
+            .collect();
+        let tmp_ft_file = format!("{}/{}", self.tmpdir, rnd_ft_file);
+
+        ft.dump_cnf_to_file(tmp_ft_file.clone(), format, timebound, None, preprocess);
         let solver_cmd = format!("{} ./{}", self.get_command(timeout_s), tmp_ft_file);
 
         let child = Command::new("sh")
@@ -124,15 +141,13 @@ impl Solver for SharpsatTDSolver {
                     // If it has something, check if is the killed signal
                     Err("Execution timeout.")
                 } else {
-                    ft.dump_cnf_to_file(String::from("lala.dft"), format, timebound, None);
+                    ft.dump_cnf_to_file(String::from("failed.dft"), format, timebound, None, false);
                     println!("{:?}", stderr);
                     Err("Something went wrong...")
                 }
             }
             Err(_err) => Err("Solver Process had an error."),
         }
-        
-        
     }
 
     fn get_tep(&self, result: Output) -> f64 {
@@ -171,19 +186,19 @@ impl GPMCSolver {
         GPMCSolver {
             path: String::from(path),
             mode: 1,
-            cs: 4000,
+            cs: 3500,
             prec: 15,
         }
-    }
-
-    fn _set_cache_size(&mut self, new_cs: usize) {
-        self.cs = new_cs
     }
 }
 
 impl Solver for GPMCSolver {
     fn _name(&self) -> String {
         String::from("GPMC")
+    }
+
+    fn _set_cache_size(&mut self, new_cs: usize) {
+        self.cs = new_cs
     }
 
     fn get_command(&self, timeout_s: u64) -> String {
@@ -199,9 +214,10 @@ impl Solver for GPMCSolver {
         format: CNFFormat,
         timebound: f64,
         timeout_s: u64,
+        preprocess: bool,
     ) -> Result<Output, &'static str> {
         let solver_cmd = self.get_command(timeout_s);
-        let model_text = ft.dump_cnf(format, timebound);
+        let model_text = ft.dump_cnf(format, timebound, preprocess);
         let mut child = Command::new("sh")
             .arg("-c")
             .arg(solver_cmd)
@@ -271,6 +287,10 @@ impl Solver for ADDMCSolver {
         String::from("ADDMC")
     }
 
+    fn _set_cache_size(&mut self, _new_cs: usize) {
+        println!("WARNING!: ADDMC solver does not have any parameter to regulate the cache size or any memory consumption.")
+    }
+
     fn get_command(&self, timeout_s: u64) -> String {
         format!("timeout -s KILL {}s {}", timeout_s, self.path)
     }
@@ -281,9 +301,10 @@ impl Solver for ADDMCSolver {
         format: CNFFormat,
         timebound: f64,
         timeout_s: u64,
+        preprocess: bool,
     ) -> Result<Output, &'static str> {
         let solver_cmd = self.get_command(timeout_s);
-        let model_text = ft.dump_cnf(format, timebound);
+        let model_text = ft.dump_cnf(format, timebound, preprocess);
         let mut child = Command::new("sh")
             .arg("-c")
             .arg(solver_cmd)
@@ -333,5 +354,180 @@ impl Solver for ADDMCSolver {
             .to_owned()
             .parse()
             .expect("Error while parsing value to float")
+    }
+}
+
+#[derive(Debug, Clone)]
+#[warn(dead_code)]
+pub struct PMCOptions {
+    /// Remove some variable by affine function detection. [default: off]
+    affine: bool,
+    /// Remove some variable by or gates detection. [default: off]
+    or_gate: bool,
+    /// Remove some variable by equivalence detection. [default: off]
+    equiv: bool,
+    /// Perform the vivification technique. [default: on]
+    vivification: bool,
+    /// Symplify the proble w.r.t the backbone. [default: on]
+    lit_implied: bool,
+    /// Try to remove a maximum number of literal. [default: off]
+    eliminate_lit: bool,
+    /// Generate a set of clause which one will be added to the result. [default: off]
+    add_clause: bool,
+}
+
+impl PMCOptions {
+    pub fn _new(
+        affine: bool,
+        or_gate: bool,
+        equiv: bool,
+        vivification: bool,
+        lit_implied: bool,
+        eliminate_lit: bool,
+        add_clause: bool,
+    ) -> Self {
+        PMCOptions {
+            affine,
+            or_gate,
+            equiv,
+            vivification,
+            lit_implied,
+            eliminate_lit,
+            add_clause,
+        }
+    }
+    pub fn _eq_configuration() -> Self {
+        PMCOptions {
+            affine: false,
+            or_gate: false,
+            equiv: false,
+            vivification: true,
+            lit_implied: true,
+            eliminate_lit: true,
+            add_clause: false,
+        }
+    }
+    pub fn _numeq_configuration() -> Self {
+        PMCOptions {
+            affine: true,
+            or_gate: true,
+            equiv: true,
+            vivification: true,
+            lit_implied: true,
+            eliminate_lit: true,
+            add_clause: false,
+        }
+    }
+    fn to_cmd(&self) -> String {
+        format!(
+            "-{} -{} -{} -{} -{} -{} -{}",
+            if self.affine { "affine" } else { "no-affine" },
+            if self.or_gate { "orGate" } else { "no-orGate" },
+            if self.equiv { "equiv" } else { "no-equiv" },
+            if self.vivification {
+                "vivification"
+            } else {
+                "no-vivification"
+            },
+            if self.lit_implied {
+                "litImplied"
+            } else {
+                "no-litImplied"
+            },
+            if self.eliminate_lit {
+                "eliminateLit"
+            } else {
+                "no-eliminateLit"
+            },
+            if self.add_clause {
+                "addClause"
+            } else {
+                "no-addClause"
+            },
+        )
+    }
+}
+
+// ./preproc_linux [options] <input-file> <result-output-file>
+// It can also read stdin :-).
+#[derive(Debug, Clone)]
+pub struct PreProccessor {
+    luby_restart: bool,
+    rnd_init: bool,
+    iterations: usize,
+    options: PMCOptions,
+}
+
+// MAX Memory usage in megabytes: 2147483647.
+// MAX CPU time allowed in seconds: 2147483647.
+impl PreProccessor {
+    pub fn new(opt: PMCOptions) -> Self {
+        PreProccessor {
+            luby_restart: true,
+            rnd_init: true,
+            iterations: 10,
+            options: opt,
+        }
+    }
+
+    // If something fails, it returns the normal CNF without preprocessing.
+    pub fn execute(&self, problem_line: &String, formula_cnf: &String) -> String {
+        let time_start = Instant::now();
+        let tmp_file = "tmp.cnf";
+
+        let command = format!(
+            "./preproc_linux -iterate={} {} {} {} {}",
+            self.iterations,
+            if self.luby_restart {
+                "-luby"
+            } else {
+                "-no-luby"
+            },
+            if self.rnd_init {
+                "-rnd-init"
+            } else {
+                "-no-rnd-init"
+            },
+            self.options.to_cmd(),
+            tmp_file
+        );
+
+        let mut f = File::create(String::from(tmp_file)).expect("unable to create file");
+        f.write_all(problem_line.as_bytes())
+            .expect("Error writing problem line to file");
+        f.write_all(formula_cnf.as_bytes())
+            .expect("Error writing the formula to file");
+
+        println!("Previous: {:?}", problem_line);
+
+        let child = Command::new("sh")
+            .arg("-c")
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdout(Stdio::piped())
+            .arg(command)
+            .spawn()
+            .expect("Failed to spawn child process");
+
+        match child.wait_with_output() {
+            Ok(out) => {
+                let _ = fs::remove_file(String::from(tmp_file));
+                let processed = String::from_utf8(out.stdout)
+                    .expect("failed to produce the stdout of the solver");
+                let elapsed = time_start.elapsed();
+                println!(
+                    "Previous: {:?}. Elapsed: {:?}",
+                    processed
+                        .clone()
+                        .split("\n")
+                        .into_iter()
+                        .filter(|l| l.starts_with("p cnf"))
+                        .collect_vec(),
+                    elapsed
+                );
+                processed
+            }
+            Err(_err) => format!("{}\n{}\n", problem_line, formula_cnf),
+        }
     }
 }

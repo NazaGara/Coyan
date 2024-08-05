@@ -1,5 +1,8 @@
 /target
 /tests
+/testing
+/solvers
+/scripts
 /results
 /benchmarks
 *.ipynb

@@ -3,27 +3,20 @@ use indicatif::ParallelProgressIterator;
 use itertools::Itertools;
 use nodes::{Node, NodeId, NodeType};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::sync::atomic::AtomicUsize;
-use std::fs::read_to_string;
 
-use crate::formula::{CNFFormat, Formula};
-use crate::nodes;
 use crate::fault_tree_normalizer::FaultTreeNormalizer;
+use crate::formula::{CNFFormat, Formula};
 use crate::modularizer::get_modules;
+use crate::nodes;
+use crate::solver::PMCOptions;
+use crate::solver::PreProccessor;
 use crate::solver::Solver;
 
-/// Helper reader function.
-fn _read_lines(filename: &str) -> Vec<String> {
-    read_to_string(filename)
-        .unwrap()
-        .lines()
-        .map(String::from)
-        .collect()
-}
-
-impl<T> From<FaultTreeNormalizer<T>> for FaultTree::<T>{
+impl<T> From<FaultTreeNormalizer<T>> for FaultTree<T> {
     fn from(ft_norm: FaultTreeNormalizer<T>) -> Self {
         FaultTree::<T> {
             nodes: ft_norm.nodes,
@@ -33,26 +26,27 @@ impl<T> From<FaultTreeNormalizer<T>> for FaultTree::<T>{
     }
 }
 
-impl<T> Clone for FaultTree<T>  where
-T: Clone,
+impl<T> Clone for FaultTree<T>
+where
+    T: Clone,
 {
     fn clone(&self) -> Self {
         FaultTree {
             nodes: self.nodes.clone(),
             root_id: self.root_id.clone(),
-            node_counter: AtomicUsize::new(self.node_counter.load(std::sync::atomic::Ordering::Relaxed)),
+            node_counter: AtomicUsize::new(
+                self.node_counter.load(std::sync::atomic::Ordering::Relaxed),
+            ),
         }
     }
 }
 
 /// A Fault Tree representation in Rust.
 pub struct FaultTree<T> {
-    // lookup_table: HashMap<String, NodeId>,
     pub nodes: IndexVec<NodeId, Node<T>>,
     pub root_id: NodeId,
     node_counter: AtomicUsize,
 }
-
 
 /// Internal representation of a Fault Tree.
 /// Can be created empty or read from a file using the Normalizer.
@@ -60,7 +54,7 @@ pub struct FaultTree<T> {
 /// - Handle the logic of the Tseitin Encoding
 /// - Do not have information about names of nodes
 /// - Do not have VOT gates
-/// - Do not have negations in arguments, but in separeted gates.
+/// - Do not have negations in arguments, but in separated gates.
 impl FaultTree<String> {
     pub fn _empty() -> Self {
         FaultTree {
@@ -76,7 +70,7 @@ impl FaultTree<String> {
         FaultTree::from(ft_norm)
     }
 
-    pub fn _set_root(&mut self, new_root_id : NodeId){
+    pub fn _set_root(&mut self, new_root_id: NodeId) {
         self.root_id = new_root_id;
     }
 
@@ -119,7 +113,17 @@ impl FaultTree<String> {
 
     /// For each node on the tree, call to the tseitin transformation.
     pub fn apply_tseitin(&self) -> Formula<NodeId> {
-        let mut args = vec![Formula::Atom(self.root_id)];
+        // let mut args = vec![Formula::Atom(self.root_id)];
+        // let mut args = match self.nodes[self.root_id].kind {
+        //     NodeType::Or(_) => vec![Formula::Not(Box::new(Formula::Atom(self.root_id)))],
+        //     _ => vec![Formula::Atom(self.root_id)],
+        // };
+        let mut args = if self.nodes[self.root_id].kind.is_or() {
+            vec![Formula::Not(Box::new(Formula::Atom(self.root_id)))]
+        } else {
+            vec![Formula::Atom(self.root_id)]
+        };
+
         for (nid, node) in self.nodes.iter_enumerated() {
             match node.tseitin_transformation(nid) {
                 Formula::And(or_args) => args.extend(or_args),
@@ -128,8 +132,7 @@ impl FaultTree<String> {
                 _ => panic!("Something went wrong while translating the Tseitin transformation."),
             }
         }
-        // args.sort_unstable();
-        // args.dedup();
+
         Formula::And(args)
     }
 
@@ -140,11 +143,12 @@ impl FaultTree<String> {
         format: CNFFormat,
         timepoint: f64,
         w_file: Option<String>,
+        preprocess: bool,
     ) {
         let cnf_formula = self.apply_tseitin();
         let text_formula = cnf_formula.to_text();
-        let n_vars = self.get_count();
 
+        let n_vars = self.get_count();
         let n_clauses = cnf_formula.num_clauses();
         let (problem_line, weight_start) = match format {
             CNFFormat::MC21 => (
@@ -168,10 +172,15 @@ impl FaultTree<String> {
             .replace(")", "");
         formula_str.push_str(" 0 \n");
 
+        let preprocessor = PreProccessor::new(PMCOptions::_eq_configuration());
+        let formula_cnf = if preprocess {
+            preprocessor.execute(&problem_line, &formula_str)
+        } else {
+            format!("{}\n{}\n", problem_line, formula_str)
+        };
+
         let mut f = File::create(filename).expect("unable to create file");
-        f.write_all(&problem_line.as_bytes())
-            .expect("Error writing problem line to file");
-        f.write_all(&formula_str.as_bytes())
+        f.write_all(&formula_cnf.as_bytes())
             .expect("Error writing the formula to file");
         match w_file {
             None => {
@@ -195,7 +204,7 @@ impl FaultTree<String> {
         }
     }
 
-    pub fn dump_cnf(&self, format: CNFFormat, timepoint: f64) -> String {
+    pub fn dump_cnf(&self, format: CNFFormat, timepoint: f64, preprocess: bool) -> String {
         let cnf_formula = self.apply_tseitin();
         let text_formula = cnf_formula.to_text();
         let n_vars = self.get_count();
@@ -223,14 +232,18 @@ impl FaultTree<String> {
             .replace(")", "");
         formula_str.push_str(" 0 \n");
 
-        let mut result = "".to_owned();
-        result.push_str(&problem_line);
-        result.push_str(&formula_str);
-        result.push_str(&be_str);
-        result.push_str(&"\n");
-        result.push_str(&gate_str);
+        let preprocessor = PreProccessor::new(PMCOptions::_eq_configuration());
+        let mut formula_cnf = if preprocess {
+            preprocessor.execute(&problem_line, &formula_str)
+        } else {
+            format!("{}\n{}\n", problem_line, formula_str)
+        };
 
-        result
+        formula_cnf.push_str(&be_str);
+        formula_cnf.push_str(&"\n");
+        formula_cnf.push_str(&gate_str);
+
+        formula_cnf
     }
 
     /// Gives the weights in DIMACS format for the Gates and of the BE respectively.
@@ -288,12 +301,114 @@ impl FaultTree<String> {
                         weight_start,
                         i + 1,
                         1.0 - prob,
-                    ))  
+                    ))
                 }
                 _ => None,
             })
             .collect_vec();
         (gate_weights, be_weights)
+    }
+
+    pub fn criticality_measure(
+        &mut self,
+        solver: &Box<dyn Solver + Sync>,
+        format: CNFFormat,
+        timepoint: f64,
+    ) -> HashMap<String, (String, String)> {
+        let true_tep = solver.compute_probabilty(&self, format, timepoint, 300, false);
+        let be_lookup_table: HashMap<String, NodeId> = self
+            .nodes
+            .iter_enumerated()
+            .filter_map(|(nid, n)| match &n.kind {
+                NodeType::BasicEvent(name, _, _) => Some((name.to_owned(), nid.to_owned())),
+                _ => None,
+            })
+            .collect::<HashMap<String, NodeId>>();
+
+        let be_list = self
+            .nodes
+            .iter()
+            .filter_map(|n| match &n.kind {
+                NodeType::BasicEvent(name, _, _) => Some(name.to_owned()),
+                _ => None,
+            })
+            .collect_vec();
+
+        // This has to be a Vec<HashMap<String, (String, String)>>
+        be_list
+            .par_iter()
+            .map(|be_name| {
+                let mut ft = self.clone();
+                (
+                    be_name.to_owned(),
+                    ft.birnbaum_measure(
+                        be_name.clone(),
+                        &solver,
+                        &be_lookup_table,
+                        format,
+                        timepoint,
+                    ),
+                )
+            })
+            .collect::<HashMap<String, (f64, f64)>>()
+            .into_iter()
+            .map(|(be_name, (ib, prob))| {
+                (
+                    be_name,
+                    (
+                        format!("BM: {}", ib),
+                        format!("CM: {}", ib * (prob / true_tep)),
+                    ),
+                )
+            })
+            .collect::<HashMap<String, (String, String)>>()
+    }
+
+    fn birnbaum_measure(
+        &mut self,
+        comp_name: String,
+        solver: &Box<dyn Solver + Sync>,
+        lookup_table: &HashMap<String, NodeId>,
+        format: CNFFormat,
+        timepoint: f64,
+    ) -> (f64, f64) {
+        let nid = lookup_table
+            .get(&comp_name)
+            .expect("The name of the Component is not a leaf in the Fault Tree")
+            .clone();
+
+        let kind = &self.nodes.get(nid).unwrap().kind;
+        let method = kind.get_method();
+        let og_prob: f64 = if method.to_lowercase().eq("prob") {
+            kind.get_prob()
+        } else {
+            1.0 - (-kind.get_prob() * timepoint).exp()
+        };
+
+        let pos_node = Node::new(NodeType::BasicEvent(
+            comp_name.to_owned(),
+            method.to_owned(),
+            230.0,
+        ));
+        self.update_roots(pos_node, nid);
+        let pos_tep = solver.compute_probabilty(&self, format, timepoint, 300, false);
+
+        let neg_node = Node::new(NodeType::BasicEvent(
+            comp_name.to_owned(),
+            method.to_owned(),
+            0.0,
+        ));
+        self.update_roots(neg_node, nid);
+        let neg_tep = solver.compute_probabilty(&self, format, timepoint, 300, false);
+
+        // Revert changes. There is no need to revert, because now there are different FTs.
+        // let og_node = Node::new(
+        //     NodeType::BasicEvent(comp_name.to_owned(), method.to_owned(), og_prob),
+        // );
+        // self.update_roots(og_node, nid);
+
+        let ib = pos_tep - neg_tep;
+        (ib, og_prob)
     }
 
     /// Update the roots of a Node in the nodes fields.
@@ -302,76 +417,77 @@ impl FaultTree<String> {
         self.nodes.insert(nid, new_node);
     }
 
-    pub fn modularize_ft(&mut self) -> Vec<NodeId>{
+    pub fn modularize_ft(&mut self) -> Vec<NodeId> {
         get_modules(self)
     }
 
     /// Be careful with the procvided number of threads, for large models (~2000 basic events) is easy for the solver to run out of memory.
-    pub fn replace_modules(&mut self,
+    pub fn replace_modules(
+        &mut self,
         solver: &Box<dyn Solver + Sync>,
         module_ids: Vec<NodeId>,
         format: CNFFormat,
         timepoint: f64,
         timeout_s: u64,
         num_workers: usize,
-        display: bool) {
-        
+        display: bool,
+    ) {
         // Chunk size should be related to the FT, not to the #threads.
-        // But, to exploit parallelism, It should also hold that chunk_size > #num_threads
+        // But, to exploit parallelism, it should hold that chunk_size > #num_threads
         let chunk_size = std::cmp::max(module_ids.len().div_ceil(10), num_workers);
         if display {
-            println!("Running {:?} modules, over {} threads, in chunks of size {}.", module_ids.len(), num_workers, chunk_size);
+            println!(
+                "Running {:?} modules, over {} threads, in chunks of size {}.",
+                module_ids.len(),
+                num_workers,
+                chunk_size
+            );
             // Compute the modules by chunks, could be more efficient if we take consideration of depth
-            for chunk in module_ids.chunks(chunk_size).into_iter(){
+            for chunk in module_ids.chunks(chunk_size).into_iter() {
                 // let to_replace: Vec<(NodeId, Node<String>)> = chunk.par_iter().progress_count(chunk_size as u64).map(|&mod_id|{
-                let to_replace: Vec<(NodeId, Node<String>)> = chunk.par_iter().panic_fuse().progress().map(|&mod_id|{
-                    let mut mod_ft = self.clone();
-                    mod_ft._set_root(mod_id);
-                    let tep = solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s);
-                    let repl_node = Node::new(NodeType::BasicEvent(
-                        format!("repl_node_{}", mod_id),
-                        String::from("prob"),
-                        tep,
-                    ));
-                    (mod_id, repl_node)
-                }).collect();
-                for (mod_id, repl_node) in to_replace.into_iter(){
+                let to_replace: Vec<(NodeId, Node<String>)> = chunk
+                    .par_iter()
+                    .panic_fuse()
+                    .progress()
+                    .map(|&mod_id| {
+                        let mut mod_ft = self.clone();
+                        mod_ft._set_root(mod_id);
+                        let tep =
+                            solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s, false);
+                        let repl_node = Node::new(NodeType::BasicEvent(
+                            format!("repl_node_{}", mod_id),
+                            String::from("prob"),
+                            tep,
+                        ));
+                        (mod_id, repl_node)
+                    })
+                    .collect();
+                for (mod_id, repl_node) in to_replace.into_iter() {
                     self.update_roots(repl_node, mod_id);
                 }
             }
         } else {
-            for chunk in module_ids.chunks(chunk_size).into_iter(){
-                let to_replace: Vec<(NodeId, Node<String>)> = chunk.par_iter().map(|&mod_id|{
-                    let mut mod_ft = self.clone();
-                    mod_ft._set_root(mod_id);
-    
-                    let tep = solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s);
-                    let repl_node = Node::new(NodeType::BasicEvent(
-                        format!("repl_node_{}", mod_id),
-                        String::from("prob"),
-                        tep,
-                    ));
-                    (mod_id, repl_node)
-                }).collect();
-                for (mod_id, repl_node) in to_replace.into_iter(){
+            for chunk in module_ids.chunks(chunk_size).into_iter() {
+                let to_replace: Vec<(NodeId, Node<String>)> = chunk
+                    .par_iter()
+                    .map(|&mod_id| {
+                        let mut mod_ft = self.clone();
+                        mod_ft._set_root(mod_id);
+
+                        let tep =
+                            solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s, false);
+                        let repl_node = Node::new(NodeType::BasicEvent(
+                            format!("repl_node_{}", mod_id),
+                            String::from("prob"),
+                            tep,
+                        ));
+                        (mod_id, repl_node)
+                    })
+                    .collect();
+                for (mod_id, repl_node) in to_replace.into_iter() {
                     self.update_roots(repl_node, mod_id);
                 }
             }
         }
     }
-    
 }
-
-// for mod_id in module_ids.iter() {
-//     let mut mod_ft = self.clone();
-//     mod_ft._set_root(*mod_id);
-//     let tep = solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s);
-//     let repl_node = Node::new(NodeType::BasicEvent(
-//         format!("repl_node_{}", mod_id),
-//         String::from("prob"),
-//         tep,
-//     ));
-//     self.update_roots(repl_node, *mod_id);
-// }
-
-
