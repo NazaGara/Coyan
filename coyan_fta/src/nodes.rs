@@ -238,7 +238,7 @@ where
 
     /// Apply the Tseitin transformation for the Node, depending on the type of node
     /// will use different rules.
-    /// Look that the output type is a Formula of NodeIds, ready for be used in the CNF.
+    /// The output type is a Formula of NodeIds, ready to be used in the CNF.
     pub fn tseitin_transformation(&self, self_id: NodeId) -> Formula<NodeId> {
         match &self.kind {
             NodeType::PlaceHolder(_, _, _) => {

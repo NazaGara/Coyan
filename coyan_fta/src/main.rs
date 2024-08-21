@@ -375,7 +375,7 @@ fn compute_criticality(command: CriticalityCommand) {
     solver._set_cache_size(max_size);
 
     let time_start = Instant::now();
-    let mut ft = FaultTree::new_from_file(&dft_filename, command.config.simplify);
+    let ft = FaultTree::new_from_file(&dft_filename, command.config.simplify);
     if command.config.verb {
         println!(
             "Measuring Birnbaum and Criticality measure of {:?} basic events.",
@@ -383,7 +383,7 @@ fn compute_criticality(command: CriticalityCommand) {
         );
     }
 
-    let measures = ft.criticality_measure(&solver, format, command.timepoint);
+    let measures = ft.criticality_measures(&solver, format, command.timepoint);
     let elapsed = time_start.elapsed();
 
     println!(
@@ -422,6 +422,7 @@ fn modularize_ft(command: ModCommand) {
     // The DFS search leaves the bottom module ids on the end, by reversing it,
     // we make sure that it starts replacing the modules that are deep in the tree.
     module_ids.reverse();
+
     ft.replace_modules(
         &solver,
         module_ids,

@@ -15,7 +15,8 @@ fn _read_lines(filename: &str) -> Vec<String> {
         .collect()
 }
 
-/// A Fault Tree representation in Rust.
+/// Normalizer struct for FTs.
+/// It handles all the not so nice parsing and reading of the FT.
 pub struct FaultTreeNormalizer<T> {
     pub lookup_table: HashMap<String, NodeId>,
     pub nodes: IndexVec<NodeId, Node<T>>,
@@ -37,7 +38,6 @@ impl Clone for FaultTreeNormalizer<String> {
     }
 }
 
-/// Fault Tree implementation to normalize the input.
 impl FaultTreeNormalizer<String> {
     pub fn new() -> Self {
         FaultTreeNormalizer {
@@ -56,8 +56,8 @@ impl FaultTreeNormalizer<String> {
     }
 
     /// Method that reads the file, and create a node for each of the lines in the file.
-    /// It generates Basic Events and Placeholders for the gates.
-    /// Keeps track of the AND/OR/VOT gates with only one root, so it can then be replaced.
+    /// Only create Basic Events and Placeholders.
+    /// Keeps track of the gates with only one root (expect NOT), so later it can then be simplified.
     fn read_file(&mut self, filename: &str, simplify: bool) -> String {
         let lines = _read_lines(filename);
         let mut root_name: String = "System".to_owned();
@@ -353,8 +353,7 @@ impl FaultTreeNormalizer<String> {
         }
     }
 
-    /// Method that calls to the file reader method, then, depending ong the flag,
-    /// will call to compute the tseitin. Finishes updating the struct.
+    /// Public method to read the FT from the File, apply simplifications and replace the placeholders.
     pub fn read_from_file(&mut self, filename: &str, simplify: bool) {
         let root_name: String = self.read_file(filename, simplify);
         self.fill_placeholders(false, false);

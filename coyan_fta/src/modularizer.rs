@@ -4,7 +4,7 @@ use index_vec::{IndexSlice, IndexVec};
 use nodes::{NodeId, NodeType};
 use std::fmt::Debug;
 
-/// t first = 0 means unvisited node
+/// Helper struct for the modularisation algorithm.
 #[derive(Clone, Debug)]
 pub struct DFSNode {
     visited: bool,
@@ -106,9 +106,9 @@ fn snd_dfs(
     let t_fst_node = curr_node.t_fst_visit;
     let t_lst_node = curr_node.t_lst_visit;
 
-    // Take immediaty children
+    // Take one-step children
     for &child_nid in &children[curr_idx] {
-        // Get the pair, if as a BE, jus the times
+        // Get the pair, if is a BE, just the times
         let (d_min, d_max) = snd_dfs(nodes, children, child_nid);
         // Update the data on the modularizer
         nodes[curr_idx].update_t_desc(d_min, d_max);
@@ -126,7 +126,9 @@ fn snd_dfs(
     )
 }
 
-// pub fn get_modules(ft: &mut FaultTree<String>) -> (Vec<NodeId>, Duration) {
+/// Modularization algorithm based on: Dutuit, Y., & Rauzy, A. (1996). A linear-time algorithm to find modules of fault trees. IEEE transactions on Reliability, 45(3), 422-425.
+/// Requires 2 dfs runs. The first one to take the time of visit of each node, and the second one to apply the formula for indentifying the modules.
+/// Each dfs run is recursively implemented.
 pub fn get_modules(ft: &mut FaultTree<String>) -> Vec<NodeId> {
     let root = ft.root_id;
     let mut nodes: IndexVec<NodeId, DFSNode> =

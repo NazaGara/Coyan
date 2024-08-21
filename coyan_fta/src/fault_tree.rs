@@ -41,20 +41,19 @@ where
     }
 }
 
-/// A Fault Tree representation in Rust.
+/// A Fault Tree representation in Coyan.
+/// Can be created empty or read from a file using FT normalizer.
+/// They have some extra details:
+/// - Handle the logic of the Tseitin Encoding
+/// - Do not have information about names of nodes
+/// - Do not have VOT gates
+/// - Do not have negations in arguments, but in separated gates.
 pub struct FaultTree<T> {
     pub nodes: IndexVec<NodeId, Node<T>>,
     pub root_id: NodeId,
     node_counter: AtomicUsize,
 }
 
-/// Internal representation of a Fault Tree.
-/// Can be created empty or read from a file using the Normalizer.
-/// They have some extra details:
-/// - Handle the logic of the Tseitin Encoding
-/// - Do not have information about names of nodes
-/// - Do not have VOT gates
-/// - Do not have negations in arguments, but in separated gates.
 impl FaultTree<String> {
     pub fn _empty() -> Self {
         FaultTree {
@@ -64,16 +63,19 @@ impl FaultTree<String> {
         }
     }
 
+    /// Generate a FT from a dft file.
     pub fn new_from_file(filename: &str, simplify: bool) -> Self {
         let mut ft_norm = FaultTreeNormalizer::new();
         ft_norm.read_from_file(filename, simplify);
         FaultTree::from(ft_norm)
     }
 
-    pub fn _set_root(&mut self, new_root_id: NodeId) {
+    /// Internal method, changes the id of the root node.
+    fn set_root(&mut self, new_root_id: NodeId) {
         self.root_id = new_root_id;
     }
 
+    /// Return number of nodes in the tree.
     pub fn get_count(&self) -> usize {
         self.node_counter.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -111,7 +113,7 @@ impl FaultTree<String> {
         (num_be, num_gates, f.num_clauses())
     }
 
-    /// For each node on the tree, call to the tseitin transformation.
+    /// Apply the tseitin transformation to all the nodes in the tree.
     pub fn apply_tseitin(&self) -> Formula<NodeId> {
         // let mut args = vec![Formula::Atom(self.root_id)];
         // let mut args = match self.nodes[self.root_id].kind {
@@ -145,11 +147,38 @@ impl FaultTree<String> {
         w_file: Option<String>,
         preprocess: bool,
     ) {
+        let (formula_cnf, weights) = self.implicit_formula(format, timepoint, preprocess);
+
+        let mut f = File::create(filename).expect("unable to create file");
+        f.write_all(&formula_cnf.as_bytes())
+            .expect("Error writing the formula to file");
+        match w_file {
+            None => {
+                f.write_all(&weights.as_bytes())
+                    .expect("Error writing weights to file");
+            }
+            Some(w_filename) => {
+                let mut w_f =
+                    File::create(format!("{}.w", w_filename)).expect("unable to create file");
+                w_f.write_all(&weights.as_bytes())
+                    .expect("Error writing the BE weights to file");
+            }
+        }
+    }
+
+    /// Internal method for code reading.
+    /// Produces both the implicit boolean formula the weights in the specified format.
+    fn implicit_formula(
+        &self,
+        format: CNFFormat,
+        timepoint: f64,
+        preprocess: bool,
+    ) -> (String, String) {
         let cnf_formula = self.apply_tseitin();
         let text_formula = cnf_formula.to_text();
-
         let n_vars = self.get_count();
         let n_clauses = cnf_formula.num_clauses();
+
         let (problem_line, weight_start) = match format {
             CNFFormat::MC21 => (
                 format!("p cnf {} {}\n", n_vars, n_clauses),
@@ -162,8 +191,8 @@ impl FaultTree<String> {
         };
 
         let (gate_weights, be_weights) = self.get_weights(weight_start, timepoint);
-        let be_str = be_weights.join("\n");
-        let gate_str = gate_weights.join("\n");
+        let be_weights = be_weights.join("\n");
+        let gate_weights = gate_weights.join("\n");
 
         let mut formula_str = text_formula
             .replace(" ∧ ", " 0 \n")
@@ -178,70 +207,15 @@ impl FaultTree<String> {
         } else {
             format!("{}\n{}\n", problem_line, formula_str)
         };
+        let weights = format!("{}\n{}", be_weights, gate_weights);
 
-        let mut f = File::create(filename).expect("unable to create file");
-        f.write_all(&formula_cnf.as_bytes())
-            .expect("Error writing the formula to file");
-        match w_file {
-            None => {
-                f.write_all(&be_str.as_bytes())
-                    .expect("Error writing the BE weights to file");
-                f.write_all(&"\n".as_bytes())
-                    .expect("Error writing . to file");
-                f.write_all(&gate_str.as_bytes())
-                    .expect("Error writing the Gate weights to file");
-            }
-            Some(w_filename) => {
-                let mut w_f =
-                    File::create(format!("{}.w", w_filename)).expect("unable to create file");
-                w_f.write_all(&be_str.as_bytes())
-                    .expect("Error writing the BE weights to file");
-                w_f.write_all(&"\n".as_bytes())
-                    .expect("Error writing . to file");
-                w_f.write_all(&gate_str.as_bytes())
-                    .expect("Error writing the Gate weights to file");
-            }
-        }
+        (formula_cnf, weights)
     }
 
+    /// Dump the implicit formula in CNF format to a String.
     pub fn dump_cnf(&self, format: CNFFormat, timepoint: f64, preprocess: bool) -> String {
-        let cnf_formula = self.apply_tseitin();
-        let text_formula = cnf_formula.to_text();
-        let n_vars = self.get_count();
-
-        let n_clauses = cnf_formula.num_clauses();
-        let (problem_line, weight_start) = match format {
-            CNFFormat::MC21 => (
-                format!("p cnf {} {}\n", n_vars, n_clauses),
-                String::from("c p weight"),
-            ),
-            CNFFormat::MCC => (
-                format!("p wcnf {} {}\n", n_vars, n_clauses),
-                String::from("w"),
-            ),
-        };
-
-        let (gate_weights, be_weights) = self.get_weights(weight_start, timepoint);
-        let be_str = be_weights.join("\n");
-        let gate_str = gate_weights.join("\n");
-
-        let mut formula_str = text_formula
-            .replace(" ∧ ", " 0 \n")
-            .replace(" V ", " ")
-            .replace("(", "")
-            .replace(")", "");
-        formula_str.push_str(" 0 \n");
-
-        let preprocessor = PreProccessor::new(PMCOptions::_eq_configuration());
-        let mut formula_cnf = if preprocess {
-            preprocessor.execute(&problem_line, &formula_str)
-        } else {
-            format!("{}\n{}\n", problem_line, formula_str)
-        };
-
-        formula_cnf.push_str(&be_str);
-        formula_cnf.push_str(&"\n");
-        formula_cnf.push_str(&gate_str);
+        let (mut formula_cnf, weights) = self.implicit_formula(format, timepoint, preprocess);
+        formula_cnf.push_str(&weights);
 
         formula_cnf
     }
@@ -309,8 +283,10 @@ impl FaultTree<String> {
         (gate_weights, be_weights)
     }
 
-    pub fn criticality_measure(
-        &mut self,
+    /// Compute the Criticality measures, the Birnbaum Measure and the Criticality Measure, that is based on the
+    /// first one and in the true TEP value of the FT.
+    pub fn criticality_measures(
+        &self,
         solver: &Box<dyn Solver + Sync>,
         format: CNFFormat,
         timepoint: f64,
@@ -364,6 +340,7 @@ impl FaultTree<String> {
             .collect::<HashMap<String, (String, String)>>()
     }
 
+    ///
     fn birnbaum_measure(
         &mut self,
         comp_name: String,
@@ -401,7 +378,7 @@ impl FaultTree<String> {
         self.update_roots(neg_node, nid);
         let neg_tep = solver.compute_probabilty(&self, format, timepoint, 300, false);
 
-        // Revert changes. There is no need to revert, because now there are different FTs.
+        // Revert changes. There is no need to revert, because there are different FTs.
         // let og_node = Node::new(
         //     NodeType::BasicEvent(comp_name.to_owned(), method.to_owned(), og_prob),
         // );
@@ -417,11 +394,13 @@ impl FaultTree<String> {
         self.nodes.insert(nid, new_node);
     }
 
+    /// Call to the Modularization algorithm.
     pub fn modularize_ft(&mut self) -> Vec<NodeId> {
         get_modules(self)
     }
 
-    /// Be careful with the procvided number of threads, for large models (~2000 basic events) is easy for the solver to run out of memory.
+    /// Method to replace the computed modules (in the module_ids parameter) with basic events with the same probability of failure at the given timepoint.
+    /// Be careful with the provided number of threads, for large models (~2000 basic events) is easy to run out of memory.
     pub fn replace_modules(
         &mut self,
         solver: &Box<dyn Solver + Sync>,
@@ -451,7 +430,7 @@ impl FaultTree<String> {
                     .progress()
                     .map(|&mod_id| {
                         let mut mod_ft = self.clone();
-                        mod_ft._set_root(mod_id);
+                        mod_ft.set_root(mod_id);
                         let tep =
                             solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s, false);
                         let repl_node = Node::new(NodeType::BasicEvent(
@@ -472,7 +451,7 @@ impl FaultTree<String> {
                     .par_iter()
                     .map(|&mod_id| {
                         let mut mod_ft = self.clone();
-                        mod_ft._set_root(mod_id);
+                        mod_ft.set_root(mod_id);
 
                         let tep =
                             solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s, false);
