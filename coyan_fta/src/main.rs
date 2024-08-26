@@ -14,6 +14,7 @@ mod fault_tree_normalizer;
 mod formula;
 mod modularizer;
 mod nodes;
+mod preproc;
 mod solver;
 
 #[derive(Parser, Debug)]
@@ -47,7 +48,7 @@ enum Command {
     #[clap(
         about = "Computes the Criticality Measure for all the BE. Each thread runs 1 FT at the time."
     )]
-    Criticality(CriticalityCommand),
+    Importance(ImportanceCommand),
     #[clap(
         about = "Modularize the input FT into all his modules, then compute the TEP of each module and replace the gate with a Basic Event, where the probability is the obtained TEP of the module."
     )]
@@ -131,7 +132,7 @@ struct ModCommand {
 }
 
 #[derive(Parser, Debug, Clone)]
-struct CriticalityCommand {
+struct ImportanceCommand {
     /// Input file containing the fault tree in GALILEO format.
     #[arg(short, long, required = true)]
     input: String,
@@ -359,7 +360,7 @@ fn compute_tep(command: SolveCommand) {
 /// Compute Criticality and Birnbaum Measures for all of the Basic Event in the FT
 /// Can be time consuming.
 /// Future Work: Paralelize with threads
-fn compute_criticality(command: CriticalityCommand) {
+fn compute_importance_measures(command: ImportanceCommand) {
     let dft_filename = command.input;
     let path = Path::new(dft_filename.as_str());
     let model_name = path.file_name().unwrap();
@@ -383,7 +384,7 @@ fn compute_criticality(command: CriticalityCommand) {
         );
     }
 
-    let measures = ft.criticality_measures(&solver, format, command.timepoint);
+    let measures = ft.importance_measures(&solver, format, command.timepoint);
     let elapsed = time_start.elapsed();
 
     println!(
@@ -442,7 +443,7 @@ fn modularize_ft(command: ModCommand) {
     );
     let elapsed = time_start.elapsed();
     println!(
-        "{}",
+        "{:#?}",
         json!({
             "#modules" : n_modules,
             "model": model_name.to_str(),
@@ -459,7 +460,7 @@ fn main() {
         Command::Info(command) => ft_info(command),
         Command::Solve(command) => compute_tep(command),
         Command::Translate(command) => translate(command),
-        Command::Criticality(command) => compute_criticality(command),
+        Command::Importance(command) => compute_importance_measures(command),
         Command::Modularize(command) => modularize_ft(command),
     }
 }

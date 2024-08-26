@@ -12,8 +12,7 @@ use crate::fault_tree_normalizer::FaultTreeNormalizer;
 use crate::formula::{CNFFormat, Formula};
 use crate::modularizer::get_modules;
 use crate::nodes;
-use crate::solver::PMCOptions;
-use crate::solver::PreProccessor;
+use crate::preproc::*; //{BPlusE, Preprocessor, PMC};
 use crate::solver::Solver;
 
 impl<T> From<FaultTreeNormalizer<T>> for FaultTree<T> {
@@ -114,7 +113,7 @@ impl FaultTree<String> {
     }
 
     /// Apply the tseitin transformation to all the nodes in the tree.
-    pub fn apply_tseitin(&self) -> Formula<NodeId> {
+    fn apply_tseitin(&self) -> Formula<NodeId> {
         // let mut args = vec![Formula::Atom(self.root_id)];
         // let mut args = match self.nodes[self.root_id].kind {
         //     NodeType::Or(_) => vec![Formula::Not(Box::new(Formula::Atom(self.root_id)))],
@@ -201,8 +200,9 @@ impl FaultTree<String> {
             .replace(")", "");
         formula_str.push_str(" 0 \n");
 
-        let preprocessor = PreProccessor::new(PMCOptions::_eq_configuration());
         let formula_cnf = if preprocess {
+            let preprocessor = PMC::default();
+            // let preprocessor = BPlusE::default();
             preprocessor.execute(&problem_line, &formula_str)
         } else {
             format!("{}\n{}\n", problem_line, formula_str)
@@ -285,12 +285,12 @@ impl FaultTree<String> {
 
     /// Compute the Criticality measures, the Birnbaum Measure and the Criticality Measure, that is based on the
     /// first one and in the true TEP value of the FT.
-    pub fn criticality_measures(
+    pub fn importance_measures(
         &self,
         solver: &Box<dyn Solver + Sync>,
         format: CNFFormat,
         timepoint: f64,
-    ) -> HashMap<String, (String, String)> {
+    ) -> HashMap<String, (String, String, String)> {
         let true_tep = solver.compute_probabilty(&self, format, timepoint, 300, false);
         let be_lookup_table: HashMap<String, NodeId> = self
             .nodes
@@ -326,18 +326,19 @@ impl FaultTree<String> {
                     ),
                 )
             })
-            .collect::<HashMap<String, (f64, f64)>>()
+            .collect::<HashMap<String, (f64, f64, f64)>>()
             .into_iter()
-            .map(|(be_name, (ib, prob))| {
+            .map(|(be_name, (ib, perf_tep, prob))| {
                 (
                     be_name,
                     (
                         format!("BM: {}", ib),
+                        format!("IP: {}", perf_tep - true_tep),
                         format!("CM: {}", ib * (prob / true_tep)),
                     ),
                 )
             })
-            .collect::<HashMap<String, (String, String)>>()
+            .collect::<HashMap<String, (String, String, String)>>()
     }
 
     ///
@@ -348,7 +349,7 @@ impl FaultTree<String> {
         lookup_table: &HashMap<String, NodeId>,
         format: CNFFormat,
         timepoint: f64,
-    ) -> (f64, f64) {
+    ) -> (f64, f64, f64) {
         let nid = lookup_table
             .get(&comp_name)
             .expect("The name of the Component is not a leaf in the Fault Tree")
@@ -385,7 +386,7 @@ impl FaultTree<String> {
         // self.update_roots(og_node, nid);
 
         let ib = pos_tep - neg_tep;
-        (ib, og_prob)
+        (ib, pos_tep, og_prob)
     }
 
     /// Update the roots of a Node in the nodes fields.
