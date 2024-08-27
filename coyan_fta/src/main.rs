@@ -5,6 +5,7 @@ use itertools::Itertools;
 use rayon::prelude::*;
 use serde_json::json;
 use solver::*;
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 use std::{fmt::Debug, str::FromStr};
@@ -81,7 +82,7 @@ struct SolveCommand {
     )]
     timebounds: Option<Vec<f64>>,
     /// Compute TEP of the FT a given timepoint. Conflicts with `timebounds`.
-    #[arg(long, default_value_t = 1.0, conflicts_with = "timebounds")]
+    #[arg(short, long, default_value_t = 1.0, conflicts_with = "timebounds")]
     timepoint: f64,
     /// Execution configuration parameters.
     #[command(flatten)]
@@ -108,7 +109,7 @@ struct TranslateCommand {
     #[arg(long)]
     w_file: Option<String>,
     /// Compute TEP of the FT a given timepoint. Conflicts with `timebounds`.
-    #[arg(long, default_value_t = 1.0, conflicts_with = "timebounds")]
+    #[arg(short, long, default_value_t = 1.0, conflicts_with = "timebounds")]
     timepoint: f64,
     /// Execution configuration parameters.
     #[command(flatten)]
@@ -124,7 +125,7 @@ struct ModCommand {
     #[arg(short, long)]
     solver_path: String,
     /// Compute TEP of the FT a given timepoint.
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(short, long, default_value_t = 1.0)]
     timepoint: f64,
     /// Execution configuration parameters.
     #[command(flatten)]
@@ -140,7 +141,7 @@ struct ImportanceCommand {
     #[arg(short, long)]
     solver_path: String,
     /// Timepoint to compute the true TEP and the measures for each basic event.
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(short, long, default_value_t = 1.0)]
     timepoint: f64,
     /// Execution configuration parameters.
     #[command(flatten)]
@@ -149,6 +150,10 @@ struct ImportanceCommand {
 
 #[derive(Parser, Debug, Clone)]
 struct ExtraArgs {
+    /// Negate top gate if is an OR, to favor UnitPropagation.
+    /// Values are wrong if this is used together with the B+E preprocessor. [default: false]
+    #[arg(short, long, default_value_t = false)]
+    negate_or: bool,
     /// Execution timeout for the WMC solver in seconds.
     #[arg(long, default_value_t = 300)]
     timeout_s: u64,
@@ -158,18 +163,18 @@ struct ExtraArgs {
     /// Number of threads to use.
     #[arg(long, default_value_t = 1)]
     num_threads: usize,
-    /// Verbosity, if true prints more information.
+    /// Verbosity, if true prints more information. [default: false]
     #[arg(long, default_value_t = false)]
     verb: bool,
-    /// Display progress bars, if possible.
+    /// Display progress bars, if possible. [default: false]
     #[arg(long, default_value_t = false)]
     display: bool,
-    /// Simplify the FT by removing one children gates.
+    /// Simplify the FT by removing one children gates. [default: true]
     #[arg(long, default_value_t = true)]
     simplify: bool,
-    /// Postprocess the CNF formula by using the pmc preprocessor.
-    #[arg(long, default_value_t = false)]
-    preprocess: bool,
+    /// If provided, postprocess the CNF formula by passing a CNF preprocessor. [default: None]
+    #[arg(long, default_value = None)]
+    preprocess: Option<String>,
 }
 
 /// Outputs relevant information about the FT.
@@ -177,7 +182,7 @@ fn ft_info(command: InfoCommand) {
     let dft_filename = command.input;
     let simplify = command.simplify;
     // let mut ft: FaultTree<String> = FaultTree::new();
-    let ft = FaultTree::new_from_file(&dft_filename, simplify);
+    let ft = FaultTree::new_from_file(&dft_filename, simplify, false);
     // ft.read_from_file(&dft_filename, simplify);
     let path = Path::new(dft_filename.as_str());
     let model_name = path.file_name().unwrap();
@@ -205,7 +210,7 @@ fn translate(command: TranslateCommand) {
         CNFFormat::from_str(&command.config.format).expect("Unsupported format. Try MCC or MC21.");
 
     let time_start = Instant::now();
-    let ft = FaultTree::new_from_file(&dft_filename, simplify);
+    let ft = FaultTree::new_from_file(&dft_filename, simplify, command.config.negate_or);
     match command.timebounds {
         None => {
             let cnf_path = format!("{}_t={}.wcnf", cnf_filename, command.timepoint);
@@ -243,7 +248,7 @@ fn translate(command: TranslateCommand) {
                     format,
                     t.to_owned(),
                     w_file.clone(),
-                    command.config.preprocess,
+                    command.config.preprocess.clone(),
                 );
                 let duration = time_start.elapsed();
                 println!(
@@ -274,17 +279,25 @@ fn compute_tep(command: SolveCommand) {
         .num_threads(command.config.num_threads)
         .build_global()
         .unwrap();
+
+    let max_size = (3500.0 / command.config.num_threads as f32) as usize;
+
     let time_start = Instant::now();
-    let ft = FaultTree::new_from_file(&dft_filename, command.config.simplify);
-    match command.timebounds {
+    let ft = FaultTree::new_from_file(
+        &dft_filename,
+        command.config.simplify,
+        command.config.negate_or,
+    );
+    let mut solver: Box<dyn Solver + Sync> = get_solver_from_path(&solver_path);
+    match command.timebounds.clone() {
         None => {
-            let solver: Box<dyn Solver> = get_solver_from_path(&solver_path);
             let tep = solver.compute_probabilty(
                 &ft,
                 format,
                 command.timepoint,
                 command.config.timeout_s,
-                command.config.preprocess,
+                preprocess,
+                command.config.negate_or,
             );
             let duration = time_start.elapsed();
             if !verbose {
@@ -310,6 +323,7 @@ fn compute_tep(command: SolveCommand) {
             };
         }
         Some(ts) => {
+            solver._set_cache_size(max_size);
             let (start, end, step) = (ts[0], ts[1], ts[2]);
             let n_steps = if step != 0.0 {
                 (end / step) as i64 + 1
@@ -320,39 +334,47 @@ fn compute_tep(command: SolveCommand) {
                 .into_iter()
                 .map(|v| start + ((100 * v) as f64 * step).round() / 100.0)
                 .collect_vec();
-            let _probs: Vec<(f64, f64)> = timebounds
+            let probs: HashMap<String, f64> = timebounds
                 .into_par_iter()
-                .filter_map(move |t| {
-                    let ft = &ft;
+                .filter_map(|t| {
                     if t > end {
                         None
                     } else {
-                        let solver = get_solver_from_path(&solver_path);
-                        let tep = solver.compute_probabilty(ft, format, t, timeout_s, preprocess);
-                        let duration = time_start.elapsed();
-                        if !verbose {
-                            println!(
-                                "{}",
-                                json!({"TEP": tep,
-                            "timepoint": t})
-                            )
-                        } else {
-                            let path = Path::new(dft_filename.as_str());
-                            let model_name = path.file_name().unwrap();
-                            println!(
-                                "{}",
-                                json!({
-                                    "model": model_name.to_str(),
-                                    "timepoint": command.timepoint,
-                                    "TEP": tep,
-                                    "duration": format!("{:?}", duration),
-                                })
-                            );
-                        };
-                        Some((t, tep))
+                        let tep = solver.compute_probabilty(
+                            &ft,
+                            format,
+                            t,
+                            timeout_s,
+                            preprocess.clone(),
+                            command.config.negate_or,
+                        );
+                        Some((format!("t={}", t), tep))
                     }
                 })
-                .collect();
+                .collect::<HashMap<String, f64>>();
+            let duration = time_start.elapsed();
+
+            let path = Path::new(dft_filename.as_str());
+            let model_name = path.file_name().unwrap();
+            if verbose {
+                println!(
+                    "{}",
+                    json!({
+                        "model": model_name.to_str(),
+                        "values": probs,
+                        "duration": format!("{:?}", duration),
+                    })
+                );
+            } else {
+                println!(
+                    "{}",
+                    json!({
+                        "model": model_name.to_str(),
+                        "duration": format!("{:?}", duration),
+                        "timebounds": command.timebounds
+                    })
+                )
+            };
         }
     }
 }
@@ -375,8 +397,13 @@ fn compute_importance_measures(command: ImportanceCommand) {
     let max_size = (3500.0 / command.config.num_threads as f32) as usize;
     solver._set_cache_size(max_size);
 
+    let ft = FaultTree::new_from_file(
+        &dft_filename,
+        command.config.simplify,
+        command.config.negate_or,
+    );
     let time_start = Instant::now();
-    let ft = FaultTree::new_from_file(&dft_filename, command.config.simplify);
+
     if command.config.verb {
         println!(
             "Measuring Birnbaum and Criticality measure of {:?} basic events.",
@@ -384,7 +411,8 @@ fn compute_importance_measures(command: ImportanceCommand) {
         );
     }
 
-    let measures = ft.importance_measures(&solver, format, command.timepoint);
+    let measures =
+        ft.importance_measures(&solver, format, command.timepoint, command.config.negate_or);
     let elapsed = time_start.elapsed();
 
     println!(
@@ -414,7 +442,11 @@ fn modularize_ft(command: ModCommand) {
     let max_size = (3500.0 / command.config.num_threads as f32) as usize;
     solver._set_cache_size(max_size);
 
-    let mut ft = FaultTree::new_from_file(&dft_filename, command.config.simplify);
+    let mut ft = FaultTree::new_from_file(
+        &dft_filename,
+        command.config.simplify,
+        command.config.negate_or,
+    );
     let time_start = Instant::now();
 
     let mut module_ids = ft.modularize_ft();
@@ -431,6 +463,7 @@ fn modularize_ft(command: ModCommand) {
         command.timepoint,
         command.config.timeout_s,
         command.config.num_threads,
+        command.config.negate_or,
         command.config.display,
     );
 
@@ -440,6 +473,7 @@ fn modularize_ft(command: ModCommand) {
         command.timepoint,
         command.config.timeout_s,
         command.config.preprocess,
+        command.config.negate_or,
     );
     let elapsed = time_start.elapsed();
     println!(

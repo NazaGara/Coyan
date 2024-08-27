@@ -1,4 +1,3 @@
-use itertools::Itertools;
 use std::fs::{self, File};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -6,6 +5,14 @@ use std::time::Instant;
 
 pub trait Preprocessor {
     fn execute(&self, problem_line: &String, formula_cnf: &String) -> String;
+}
+
+pub fn get_preprocessor_from_path(path: &str) -> Box<dyn Preprocessor + Sync> {
+    match path.to_ascii_lowercase() {
+        x if x.contains("preproc") => Box::new(PMC::new(path)),
+        x if x.contains("b+e") => Box::new(BPlusE::new(path)),
+        _ => panic!("preprocessor not supported. Known tools: B+E - PMC."),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +112,8 @@ impl PMCOptions {
 // MAX CPU time allowed in seconds: 2147483647.
 #[derive(Debug, Clone)]
 pub struct PMC {
+    /// Path to the preprocessor
+    path: String,
     /// Use the Luby restart sequence
     luby_restart: bool,
     /// Randomize the initial activity
@@ -114,9 +123,10 @@ pub struct PMC {
     options: PMCOptions,
 }
 
-impl Default for PMC {
-    fn default() -> Self {
+impl PMC {
+    pub fn new(path: &str) -> Self {
         PMC {
+            path: String::from(path),
             luby_restart: true,
             rnd_init: false,
             iterations: 10,
@@ -132,7 +142,8 @@ impl Preprocessor for PMC {
         let tmp_file = "tmp.cnf";
 
         let command = format!(
-            "./preproc_linux -iterate={} {} {} {} {}",
+            "./{} -iterate={} {} {} {} {}",
+            self.path,
             self.iterations,
             if self.luby_restart {
                 "-luby"
@@ -168,17 +179,7 @@ impl Preprocessor for PMC {
                 let _ = fs::remove_file(String::from(tmp_file));
                 let processed = String::from_utf8(out.stdout)
                     .expect("failed to produce the stdout of the solver");
-                let elapsed = time_start.elapsed();
-                println!(
-                    "New: {:?}. Elapsed: {:?}",
-                    processed
-                        .clone()
-                        .split("\n")
-                        .into_iter()
-                        .filter(|l| l.starts_with("p cnf"))
-                        .collect_vec(),
-                    elapsed
-                );
+                let _elapsed = time_start.elapsed();
                 processed
             }
             Err(_err) => format!("{}\n{}\n", problem_line, formula_cnf),
@@ -187,6 +188,8 @@ impl Preprocessor for PMC {
 }
 
 pub struct BPlusE {
+    /// Path to the solver
+    path: String,
     /// Use the Luby restart sequence
     luby_restart: bool,
     /// Randomize the initial activity
@@ -197,9 +200,10 @@ pub struct BPlusE {
     max_num_res: i32,
 }
 
-impl Default for BPlusE {
-    fn default() -> Self {
+impl BPlusE {
+    pub fn new(path: &str) -> Self {
         BPlusE {
+            path: String::from(path),
             luby_restart: true,
             rnd_init: false,
             lim_solver: 0,
@@ -214,7 +218,8 @@ impl Preprocessor for BPlusE {
         let tmp_file = "tmp.cnf";
 
         let command = format!(
-            "./B+E_linux {} {} -limSolver={} -max#Res={} {}",
+            "./{} {} {} -limSolver={} -max#Res={} {}",
+            self.path,
             if self.luby_restart {
                 "-luby"
             } else {
@@ -250,17 +255,7 @@ impl Preprocessor for BPlusE {
                 let _ = fs::remove_file(String::from(tmp_file));
                 let processed = String::from_utf8(out.stdout)
                     .expect("failed to produce the stdout of the solver");
-                let elapsed = time_start.elapsed();
-                println!(
-                    "New: {:?}. Elapsed: {:?}",
-                    processed
-                        .clone()
-                        .split("\n")
-                        .into_iter()
-                        .filter(|l| l.starts_with("p cnf"))
-                        .collect_vec(),
-                    elapsed
-                );
+                let _elapsed = time_start.elapsed();
                 processed
             }
             Err(_err) => format!("{}\n{}\n", problem_line, formula_cnf),

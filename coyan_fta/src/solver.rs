@@ -16,7 +16,7 @@ pub trait Solver {
         format: CNFFormat,
         timebound: f64,
         timeout_s: u64,
-        preprocess: bool,
+        preprocess: Option<String>,
     ) -> Result<Output, &'static str>;
     fn get_tep(&self, result: Output) -> f64;
     fn compute_probabilty(
@@ -25,15 +25,15 @@ pub trait Solver {
         format: CNFFormat,
         timebound: f64,
         timeout_s: u64,
-        preprocess: bool,
+        preprocess: Option<String>,
+        negate_top_or: bool,
     ) -> f64 {
         let top_is_or = ft.nodes[ft.root_id].kind.is_or();
         match self.run_model(ft, format, timebound, timeout_s, preprocess) {
             Ok(value) => {
                 let wmc_res = self.get_tep(value);
-                if top_is_or {
+                if top_is_or && negate_top_or {
                     1.0 - wmc_res
-                    // wmc_res
                 } else {
                     wmc_res
                 }
@@ -49,7 +49,7 @@ pub fn get_solver_from_path(path: &str) -> Box<dyn Solver + Sync> {
         x if x.contains("sharpsat") => Box::new(SharpsatTDSolver::new(path)),
         x if x.contains("addmc") => Box::new(ADDMCSolver::new(path)),
         x if x.contains("gpmc") => Box::new(GPMCSolver::new(path)),
-        _ => panic!("Solver not supported."),
+        _ => panic!("Solver not supported. Supported solves: ADDMC - GPMC - SharpSAT-TD"),
     }
 }
 
@@ -106,7 +106,7 @@ impl Solver for SharpsatTDSolver {
         format: CNFFormat,
         timebound: f64,
         timeout_s: u64,
-        preprocess: bool,
+        preprocess: Option<String>,
     ) -> Result<Output, &'static str> {
         // Set unique tmp name for each thread. With 5 char the chance of taking a name in use is 26⁵.
         let rnd_ft_file: String = rand::thread_rng()
@@ -141,7 +141,7 @@ impl Solver for SharpsatTDSolver {
                     // If it has something, check if is the killed signal
                     Err("Execution timeout.")
                 } else {
-                    ft.dump_cnf_to_file(String::from("failed.dft"), format, timebound, None, false);
+                    ft.dump_cnf_to_file(String::from("failed.dft"), format, timebound, None, None);
                     println!("{:?}", stderr);
                     Err("Something went wrong...")
                 }
@@ -214,7 +214,7 @@ impl Solver for GPMCSolver {
         format: CNFFormat,
         timebound: f64,
         timeout_s: u64,
-        preprocess: bool,
+        preprocess: Option<String>,
     ) -> Result<Output, &'static str> {
         let solver_cmd = self.get_command(timeout_s);
         let model_text = ft.dump_cnf(format, timebound, preprocess);
@@ -301,7 +301,7 @@ impl Solver for ADDMCSolver {
         format: CNFFormat,
         timebound: f64,
         timeout_s: u64,
-        preprocess: bool,
+        preprocess: Option<String>,
     ) -> Result<Output, &'static str> {
         let solver_cmd = self.get_command(timeout_s);
         let model_text = ft.dump_cnf(format, timebound, preprocess);

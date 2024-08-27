@@ -117,7 +117,7 @@ fn main() {
             let solver = get_solver_from_path(&cmd);
             rft.save_to_dft(output_filename);
             let ft = rft.extract_ft();
-            let wmc = solver.compute_probabilty(&ft, format, 1.0, args.timeout_s, false);
+            let wmc = solver.compute_probabilty(&ft, format, 1.0, args.timeout_s, None, false);
             let duration = start.elapsed();
 
             println!(

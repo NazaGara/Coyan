@@ -21,6 +21,7 @@ impl<T> From<FaultTreeNormalizer<T>> for FaultTree<T> {
             nodes: ft_norm.nodes,
             root_id: ft_norm.root_id,
             node_counter: ft_norm.node_counter,
+            negate_or: false,
         }
     }
 }
@@ -36,6 +37,7 @@ where
             node_counter: AtomicUsize::new(
                 self.node_counter.load(std::sync::atomic::Ordering::Relaxed),
             ),
+            negate_or: self.negate_or.clone(),
         }
     }
 }
@@ -51,6 +53,7 @@ pub struct FaultTree<T> {
     pub nodes: IndexVec<NodeId, Node<T>>,
     pub root_id: NodeId,
     node_counter: AtomicUsize,
+    negate_or: bool,
 }
 
 impl FaultTree<String> {
@@ -59,14 +62,17 @@ impl FaultTree<String> {
             nodes: IndexVec::new(),
             root_id: NodeId::new(0),
             node_counter: AtomicUsize::new(0),
+            negate_or: false,
         }
     }
 
     /// Generate a FT from a dft file.
-    pub fn new_from_file(filename: &str, simplify: bool) -> Self {
+    pub fn new_from_file(filename: &str, simplify: bool, negate_or: bool) -> Self {
         let mut ft_norm = FaultTreeNormalizer::new();
         ft_norm.read_from_file(filename, simplify);
-        FaultTree::from(ft_norm)
+        let mut ft = FaultTree::from(ft_norm);
+        ft.negate_or = negate_or;
+        ft
     }
 
     /// Internal method, changes the id of the root node.
@@ -114,12 +120,7 @@ impl FaultTree<String> {
 
     /// Apply the tseitin transformation to all the nodes in the tree.
     fn apply_tseitin(&self) -> Formula<NodeId> {
-        // let mut args = vec![Formula::Atom(self.root_id)];
-        // let mut args = match self.nodes[self.root_id].kind {
-        //     NodeType::Or(_) => vec![Formula::Not(Box::new(Formula::Atom(self.root_id)))],
-        //     _ => vec![Formula::Atom(self.root_id)],
-        // };
-        let mut args = if self.nodes[self.root_id].kind.is_or() {
+        let mut args = if self.nodes[self.root_id].kind.is_or() && self.negate_or {
             vec![Formula::Not(Box::new(Formula::Atom(self.root_id)))]
         } else {
             vec![Formula::Atom(self.root_id)]
@@ -144,7 +145,7 @@ impl FaultTree<String> {
         format: CNFFormat,
         timepoint: f64,
         w_file: Option<String>,
-        preprocess: bool,
+        preprocess: Option<String>,
     ) {
         let (formula_cnf, weights) = self.implicit_formula(format, timepoint, preprocess);
 
@@ -171,7 +172,7 @@ impl FaultTree<String> {
         &self,
         format: CNFFormat,
         timepoint: f64,
-        preprocess: bool,
+        preprocess: Option<String>,
     ) -> (String, String) {
         let cnf_formula = self.apply_tseitin();
         let text_formula = cnf_formula.to_text();
@@ -200,20 +201,27 @@ impl FaultTree<String> {
             .replace(")", "");
         formula_str.push_str(" 0 \n");
 
-        let formula_cnf = if preprocess {
-            let preprocessor = PMC::default();
-            // let preprocessor = BPlusE::default();
-            preprocessor.execute(&problem_line, &formula_str)
-        } else {
-            format!("{}\n{}\n", problem_line, formula_str)
+        let formula_cnf = match preprocess {
+            Some(preprocessor_path) => {
+                let preprocessor: Box<dyn Preprocessor> =
+                    get_preprocessor_from_path(&preprocessor_path);
+                preprocessor.execute(&problem_line, &formula_str)
+            }
+            None => format!("{}\n{}\n", problem_line, formula_str),
         };
+
         let weights = format!("{}\n{}", be_weights, gate_weights);
 
         (formula_cnf, weights)
     }
 
     /// Dump the implicit formula in CNF format to a String.
-    pub fn dump_cnf(&self, format: CNFFormat, timepoint: f64, preprocess: bool) -> String {
+    pub fn dump_cnf(
+        &self,
+        format: CNFFormat,
+        timepoint: f64,
+        preprocess: Option<String>,
+    ) -> String {
         let (mut formula_cnf, weights) = self.implicit_formula(format, timepoint, preprocess);
         formula_cnf.push_str(&weights);
 
@@ -283,15 +291,15 @@ impl FaultTree<String> {
         (gate_weights, be_weights)
     }
 
-    /// Compute the Criticality measures, the Birnbaum Measure and the Criticality Measure, that is based on the
-    /// first one and in the true TEP value of the FT.
+    /// Compute the Importance measures, the Birnbaum Measure, the Improvement Potential and the Criticality Measure.
     pub fn importance_measures(
         &self,
         solver: &Box<dyn Solver + Sync>,
         format: CNFFormat,
         timepoint: f64,
+        negate_or: bool,
     ) -> HashMap<String, (String, String, String)> {
-        let true_tep = solver.compute_probabilty(&self, format, timepoint, 300, false);
+        let true_tep = solver.compute_probabilty(&self, format, timepoint, 300, None, negate_or);
         let be_lookup_table: HashMap<String, NodeId> = self
             .nodes
             .iter_enumerated()
@@ -317,12 +325,13 @@ impl FaultTree<String> {
                 let mut ft = self.clone();
                 (
                     be_name.to_owned(),
-                    ft.birnbaum_measure(
+                    ft.measure_be(
                         be_name.clone(),
                         &solver,
                         &be_lookup_table,
                         format,
                         timepoint,
+                        negate_or,
                     ),
                 )
             })
@@ -332,27 +341,28 @@ impl FaultTree<String> {
                 (
                     be_name,
                     (
-                        format!("BM: {}", ib),
-                        format!("IP: {}", perf_tep - true_tep),
-                        format!("CM: {}", ib * (prob / true_tep)),
+                        format!("{}", ib),
+                        format!("{}", perf_tep - true_tep),
+                        format!("{}", ib * (prob / true_tep)),
                     ),
                 )
             })
             .collect::<HashMap<String, (String, String, String)>>()
     }
 
-    ///
-    fn birnbaum_measure(
+    /// Method called by [self] in the importance_measures method to compute each measure for a specific basic event.
+    fn measure_be(
         &mut self,
         comp_name: String,
         solver: &Box<dyn Solver + Sync>,
         lookup_table: &HashMap<String, NodeId>,
         format: CNFFormat,
         timepoint: f64,
+        negate_or: bool,
     ) -> (f64, f64, f64) {
         let nid = lookup_table
             .get(&comp_name)
-            .expect("The name of the Component is not a leaf in the Fault Tree")
+            .expect("The name of the component is not a leaf in the Tree")
             .clone();
 
         let kind = &self.nodes.get(nid).unwrap().kind;
@@ -365,32 +375,30 @@ impl FaultTree<String> {
 
         let pos_node = Node::new(NodeType::BasicEvent(
             comp_name.to_owned(),
-            method.to_owned(),
-            230.0,
+            String::from("prob"),
+            1.0,
         ));
-        self.update_roots(pos_node, nid);
-        let pos_tep = solver.compute_probabilty(&self, format, timepoint, 300, false);
+        self.update_root(pos_node, nid);
+        let pos_tep = solver.compute_probabilty(&self, format, timepoint, 300, None, negate_or);
 
         let neg_node = Node::new(NodeType::BasicEvent(
             comp_name.to_owned(),
-            method.to_owned(),
+            String::from("prob"),
             0.0,
         ));
-        self.update_roots(neg_node, nid);
-        let neg_tep = solver.compute_probabilty(&self, format, timepoint, 300, false);
+        self.update_root(neg_node, nid);
+        let neg_tep = solver.compute_probabilty(&self, format, timepoint, 300, None, negate_or);
 
         // Revert changes. There is no need to revert, because there are different FTs.
         // let og_node = Node::new(
         //     NodeType::BasicEvent(comp_name.to_owned(), method.to_owned(), og_prob),
         // );
         // self.update_roots(og_node, nid);
-
-        let ib = pos_tep - neg_tep;
-        (ib, pos_tep, og_prob)
+        (pos_tep - neg_tep, pos_tep, og_prob)
     }
 
-    /// Update the roots of a Node in the nodes fields.
-    pub fn update_roots(&mut self, new_node: Node<String>, nid: NodeId) {
+    /// Update a Node by replacing it with another one.
+    pub fn update_root(&mut self, new_node: Node<String>, nid: NodeId) {
         self.nodes.remove(nid);
         self.nodes.insert(nid, new_node);
     }
@@ -410,6 +418,7 @@ impl FaultTree<String> {
         timepoint: f64,
         timeout_s: u64,
         num_workers: usize,
+        negate_or: bool,
         display: bool,
     ) {
         // Chunk size should be related to the FT, not to the #threads.
@@ -432,8 +441,9 @@ impl FaultTree<String> {
                     .map(|&mod_id| {
                         let mut mod_ft = self.clone();
                         mod_ft.set_root(mod_id);
-                        let tep =
-                            solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s, false);
+                        let tep = solver.compute_probabilty(
+                            &mod_ft, format, timepoint, timeout_s, None, negate_or,
+                        );
                         let repl_node = Node::new(NodeType::BasicEvent(
                             format!("repl_node_{}", mod_id),
                             String::from("prob"),
@@ -443,7 +453,7 @@ impl FaultTree<String> {
                     })
                     .collect();
                 for (mod_id, repl_node) in to_replace.into_iter() {
-                    self.update_roots(repl_node, mod_id);
+                    self.update_root(repl_node, mod_id);
                 }
             }
         } else {
@@ -453,9 +463,9 @@ impl FaultTree<String> {
                     .map(|&mod_id| {
                         let mut mod_ft = self.clone();
                         mod_ft.set_root(mod_id);
-
-                        let tep =
-                            solver.compute_probabilty(&mod_ft, format, timepoint, timeout_s, false);
+                        let tep = solver.compute_probabilty(
+                            &mod_ft, format, timepoint, timeout_s, None, negate_or,
+                        );
                         let repl_node = Node::new(NodeType::BasicEvent(
                             format!("repl_node_{}", mod_id),
                             String::from("prob"),
@@ -465,7 +475,7 @@ impl FaultTree<String> {
                     })
                     .collect();
                 for (mod_id, repl_node) in to_replace.into_iter() {
-                    self.update_roots(repl_node, mod_id);
+                    self.update_root(repl_node, mod_id);
                 }
             }
         }
