@@ -1,7 +1,6 @@
-use std::fs::{self, File};
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::time::Instant;
+// use std::time::Instant;
 
 pub trait Preprocessor {
     fn execute(&self, problem_line: &String, formula_cnf: &String) -> String;
@@ -138,11 +137,11 @@ impl PMC {
 impl Preprocessor for PMC {
     // If something fails, it returns the normal CNF without preprocessing.
     fn execute(&self, problem_line: &String, formula_cnf: &String) -> String {
-        let time_start = Instant::now();
-        let tmp_file = "tmp.cnf";
+        // let time_start = Instant::now();
+        let model_text = format!("{}\n{}\n", problem_line, formula_cnf);
 
         let command = format!(
-            "./{} -iterate={} {} {} {} {}",
+            "./{} -iterate={} {} {} {}",
             self.path,
             self.iterations,
             if self.luby_restart {
@@ -156,16 +155,9 @@ impl Preprocessor for PMC {
                 "-no-rnd-init"
             },
             self.options.to_cmd(),
-            tmp_file
         );
 
-        let mut f = File::create(String::from(tmp_file)).expect("unable to create file");
-        f.write_all(problem_line.as_bytes())
-            .expect("Error writing problem line to file");
-        f.write_all(formula_cnf.as_bytes())
-            .expect("Error writing the formula to file");
-
-        let child = Command::new("sh")
+        let mut child = Command::new("sh")
             .arg("-c")
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())
@@ -174,12 +166,16 @@ impl Preprocessor for PMC {
             .spawn()
             .expect("Failed to spawn child process");
 
+        let stdin = child.stdin.as_mut().expect("Failed to open stdin");
+        stdin
+            .write_all(model_text.as_bytes())
+            .expect("Failed to write to stdin");
+
         match child.wait_with_output() {
             Ok(out) => {
-                let _ = fs::remove_file(String::from(tmp_file));
                 let processed = String::from_utf8(out.stdout)
                     .expect("failed to produce the stdout of the solver");
-                let _elapsed = time_start.elapsed();
+                // let _elapsed = time_start.elapsed();
                 processed
             }
             Err(_err) => format!("{}\n{}\n", problem_line, formula_cnf),
@@ -214,11 +210,11 @@ impl BPlusE {
 
 impl Preprocessor for BPlusE {
     fn execute(&self, problem_line: &String, formula_cnf: &String) -> String {
-        let time_start = Instant::now();
-        let tmp_file = "tmp.cnf";
+        // let time_start = Instant::now();
+        let model_text = format!("{}\n{}\n", problem_line, formula_cnf);
 
         let command = format!(
-            "./{} {} {} -limSolver={} -max#Res={} {}",
+            "./{} {} {} -limSolver={} -max#Res={}",
             self.path,
             if self.luby_restart {
                 "-luby"
@@ -232,16 +228,9 @@ impl Preprocessor for BPlusE {
             },
             self.lim_solver,
             self.max_num_res,
-            tmp_file
         );
 
-        let mut f = File::create(String::from(tmp_file)).expect("unable to create file");
-        f.write_all(problem_line.as_bytes())
-            .expect("Error writing problem line to file");
-        f.write_all(formula_cnf.as_bytes())
-            .expect("Error writing the formula to file");
-
-        let child = Command::new("sh")
+        let mut child = Command::new("sh")
             .arg("-c")
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())
@@ -250,12 +239,17 @@ impl Preprocessor for BPlusE {
             .spawn()
             .expect("Failed to spawn child process");
 
+        let stdin = child.stdin.as_mut().expect("Failed to open stdin");
+        stdin
+            .write_all(model_text.as_bytes())
+            .expect("Failed to write to stdin");
+
         match child.wait_with_output() {
             Ok(out) => {
-                let _ = fs::remove_file(String::from(tmp_file));
                 let processed = String::from_utf8(out.stdout)
-                    .expect("failed to produce the stdout of the solver");
-                let _elapsed = time_start.elapsed();
+                    .expect("failed to produce the stdout of the solver")
+                    .replace("Reading", "c Reading");
+                // let _elapsed = time_start.elapsed();
                 processed
             }
             Err(_err) => format!("{}\n{}\n", problem_line, formula_cnf),

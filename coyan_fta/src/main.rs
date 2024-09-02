@@ -51,7 +51,7 @@ enum Command {
     )]
     Importance(ImportanceCommand),
     #[clap(
-        about = "Modularize the input FT into all his modules, then compute the TEP of each module and replace the gate with a Basic Event, where the probability is the obtained TEP of the module."
+        about = "Modularize the input FT into all his modules, compute the TEP of each module and replace the gate with a Basic Event, where the probability is the obtained TEP of the module. Finally, compute the TEP of the entire FT."
     )]
     Modularize(ModCommand),
 }
@@ -64,6 +64,9 @@ struct InfoCommand {
     /// Simplify the FT by removing one children gates.
     #[arg(long, default_value_t = false)]
     simplify: bool,
+    /// If provided, postprocess the CNF formula by passing a CNF preprocessor. [default: None]
+    #[arg(long, default_value = None)]
+    preprocess: Option<String>,
 }
 #[derive(Parser, Debug, Clone)]
 struct SolveCommand {
@@ -150,8 +153,7 @@ struct ImportanceCommand {
 
 #[derive(Parser, Debug, Clone)]
 struct ExtraArgs {
-    /// Negate top gate if is an OR, to favor UnitPropagation.
-    /// Values are wrong if this is used together with the B+E preprocessor. [default: false]
+    /// Negate top gate if is an OR, to favor UnitPropagation. [default: false]
     #[arg(short, long, default_value_t = false)]
     negate_or: bool,
     /// Execution timeout for the WMC solver in seconds.
@@ -186,7 +188,7 @@ fn ft_info(command: InfoCommand) {
     // ft.read_from_file(&dft_filename, simplify);
     let path = Path::new(dft_filename.as_str());
     let model_name = path.file_name().unwrap();
-    let (num_be, num_gates, num_clauses) = ft.get_info();
+    let (num_be, num_gates, num_clauses) = ft.get_info(command.preprocess);
     println!(
         "{}",
         json!({
@@ -407,7 +409,7 @@ fn compute_importance_measures(command: ImportanceCommand) {
     if command.config.verb {
         println!(
             "Measuring Birnbaum and Criticality measure of {:?} basic events.",
-            ft.get_info().0
+            ft.get_info(None).0
         );
     }
 
@@ -439,6 +441,8 @@ fn modularize_ft(command: ModCommand) {
         .num_threads(command.config.num_threads)
         .build_global()
         .unwrap();
+
+    // Distribute cache use for each thread.
     let max_size = (3500.0 / command.config.num_threads as f32) as usize;
     solver._set_cache_size(max_size);
 
@@ -467,6 +471,9 @@ fn modularize_ft(command: ModCommand) {
         command.config.display,
     );
 
+    // Reset Cachce max size for the last execution.
+    solver._set_cache_size(3500);
+
     let tep = solver.compute_probabilty(
         &ft,
         format,
@@ -477,7 +484,7 @@ fn modularize_ft(command: ModCommand) {
     );
     let elapsed = time_start.elapsed();
     println!(
-        "{:#?}",
+        "{}",
         json!({
             "#modules" : n_modules,
             "model": model_name.to_str(),

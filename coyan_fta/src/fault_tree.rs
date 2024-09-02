@@ -86,7 +86,7 @@ impl FaultTree<String> {
     }
 
     /// Get useful information of the Fault Tree.
-    pub fn get_info(&self) -> (usize, usize, usize) {
+    pub fn get_info(&self, _preprocess: Option<String>) -> (usize, usize, usize) {
         let num_be = self
             .nodes
             .indices()

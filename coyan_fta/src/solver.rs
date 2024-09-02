@@ -23,13 +23,13 @@ pub trait Solver {
         &self,
         ft: &FaultTree<String>,
         format: CNFFormat,
-        timebound: f64,
+        timepoint: f64,
         timeout_s: u64,
         preprocess: Option<String>,
         negate_top_or: bool,
     ) -> f64 {
         let top_is_or = ft.nodes[ft.root_id].kind.is_or();
-        match self.run_model(ft, format, timebound, timeout_s, preprocess) {
+        match self.run_model(ft, format, timepoint, timeout_s, preprocess) {
             Ok(value) => {
                 let wmc_res = self.get_tep(value);
                 if top_is_or && negate_top_or {
@@ -305,6 +305,7 @@ impl Solver for ADDMCSolver {
     ) -> Result<Output, &'static str> {
         let solver_cmd = self.get_command(timeout_s);
         let model_text = ft.dump_cnf(format, timebound, preprocess);
+
         let mut child = Command::new("sh")
             .arg("-c")
             .arg(solver_cmd)

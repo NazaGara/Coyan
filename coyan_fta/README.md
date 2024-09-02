@@ -29,24 +29,46 @@ Commands:
     - `-o, --output <OUTPUT>`: Output file, writes .cnf or .wcnf depending on the format.
     - `-t, --timebounds <TIMEBOUNDS> <TIMEBOUNDS> <TIMEBOUNDS>`: Time bounds for the exponential models. It creates a range of values according to the command arguments: `[start, end, step]`. Conflicts with `timepoint`.
     - `--timepoint <TIMEPOINT>`: Compute Unreliability of the FT a given time point [default: 1]. Conflicts with `timebounds`.
-    - `--format <FORMAT>`: Output format for the CNF formula. The format gives the extension to the file. Support values `MC21` and `MCC` [default: `MC21`]
-    - `--simplify`: Simplify the FT by removing gates with only one child.
-    - `--verb`: Verbosity, if true, prints more details at finish. Default = false.
+    - `EXTRA ARGUMENTS`
     - `-h, --help`: Print help
 
 - `solve`: Executes a Solver to obtain the TEP of the FT at a given time point or time bounds.
   - Supported Solvers: `GPMC`, `SharpSAT-TD`and `ADDMC`.
     - `SharpSAT-TD` uses the `.tmp` directory internally.
   - OPTIONS:
-    - `-s, --solver-path <SOLVER_PATH>`: Solver path and arguments. If the solver needs arguments, separate them using a colon. Example: `/solvers/gpmc:mode=1`
+    - `-s, --solver-path <SOLVER_PATH>`: Solver path and arguments.
     - `-t, --timebounds <TIMEBOUNDS> <TIMEBOUNDS> <TIMEBOUNDS>`: Time bounds for the exponential models. It creates a range of values according to the command arguments: `[start, end, step]`. Conflicts with `timepoint`.
     - `--timepoint <TIMEPOINT>`: Compute Unreliability of the FT a given time point [default: 1]. Conflicts with `timebounds`.
-    - `--timeout-s <TIMEOUT_S>`: Execution timeout for the WMC solver in seconds. [Default: 300 (5 minutes)]
-    - `--format <FORMAT>`: Output format for the CNF formula. Support values `MC21` and `MCC` [default: `MC21`]
-    - `--num_threads  <NUM_THREADS>`: Number of threads to use when time bounds are used [default: 4].
-    - `--simplify`: Simplify the FT by removing gates with only one child.
-    - `--verb`: Verbosity, if true, prints more details when finished. [Default: false]
+    - `EXTRA ARGUMENTS`
     - `-h, --help`: Print help
+
+- `importance`: Computes the Criticality Measure for all the BE. Each thread runs 1 FT at the time.
+  - Supported Solvers: `GPMC`, `SharpSAT-TD`and `ADDMC`.
+    - `SharpSAT-TD` uses the `.tmp` directory internally.
+  - OPTIONS:
+    - `-s, --solver-path <SOLVER_PATH>`: Solver path and arguments.
+    - `-t --timepoint`: Time point to compute the true TEP and the measures for each basic event [default: 1].
+    - `EXTRA ARGUMENTS`
+    - `-h, --help`: Print help
+
+- `modularize`: Modularize the input FT into all his modules, compute the TEP of each module and replace the gate with a Basic Event, where the probability is the obtained TEP of the module. Finally, compute the TEP of the entire FT.
+  - Supported Solvers: `GPMC`, `SharpSAT-TD`and `ADDMC`.
+    - `SharpSAT-TD` uses the `.tmp` directory internally.
+  - OPTIONS:
+    - `-s, --solver-path <SOLVER_PATH>`: Solver path and arguments.
+    - `-t, --timepoint <TIMEPOINT>`: Compute Unreliability of the FT a given time point [default: 1].
+    - `EXTRA ARGUMENTS`
+    - `-h, --help`: Print help
+
+- EXTRA ARGUMENTS:
+  - `-n, --negate_or`: Negate top gate if is an OR, to favor UnitPropagation. Values are wrong if this is used together with the B+E preprocessor. [default: false].
+  - `--timeout-s <TIMEOUT_S>`: Execution timeout for the WMC solver in seconds.
+  - `--format <FORMAT>`: Output format for the CNF formula. The format gives the extension to the file. Support values `MC21` and `MCC` [default: `MC21`].
+  - `--num-threads <NUM_THREADS>`: Number of threads to use.
+  - `--verb`: Verbosity, if true prints more information. [default: false].
+  - `--display`: Display progress bars, if possible. [default: false].
+  - `--simplify`: Simplify the FT by removing one children gates. [default: true].
+  - `--preprocess <PREPROCESS>`: If provided, postprocess the CNF formula by passing a CNF preprocessor. [default: None].
 
 ## WMC solvers
 
