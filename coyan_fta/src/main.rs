@@ -153,6 +153,9 @@ struct ImportanceCommand {
 
 #[derive(Parser, Debug, Clone)]
 struct ExtraArgs {
+    /// Max cache size to distribute between the threads in KB. [default: 3500]
+    #[arg(long, default_value_t = 3500)]
+    max_cache_size: usize,
     /// Negate top gate if is an OR, to favor UnitPropagation. [default: false]
     #[arg(short, long, default_value_t = false)]
     negate_or: bool,
@@ -282,7 +285,7 @@ fn compute_tep(command: SolveCommand) {
         .build_global()
         .unwrap();
 
-    let max_size = (3500.0 / command.config.num_threads as f32) as usize;
+    let max_size = command.config.max_cache_size / command.config.num_threads;
 
     let time_start = Instant::now();
     let ft = FaultTree::new_from_file(
@@ -396,7 +399,12 @@ fn compute_importance_measures(command: ImportanceCommand) {
         .num_threads(command.config.num_threads)
         .build_global()
         .unwrap();
-    let max_size = (3500.0 / command.config.num_threads as f32) as usize;
+    let max_size = command.config.max_cache_size / command.config.num_threads;
+
+    println!(
+        "{}. mcs: {} and #threads: {}",
+        max_size, command.config.max_cache_size, command.config.num_threads
+    );
     solver._set_cache_size(max_size);
 
     let ft = FaultTree::new_from_file(
@@ -471,7 +479,7 @@ fn modularize_ft(command: ModCommand) {
         command.config.display,
     );
 
-    // Reset Cachce max size for the last execution.
+    // Reset Cache max size for the last execution.
     solver._set_cache_size(3500);
 
     let tep = solver.compute_probabilty(
