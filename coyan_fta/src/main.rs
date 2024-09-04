@@ -61,11 +61,14 @@ struct InfoCommand {
     /// Input file containing the fault tree in GALILEO format.
     #[arg(short, long, required = true)]
     input: String,
-    /// Simplify the FT by removing one children gates.
-    #[arg(long, default_value_t = false)]
+    /// Simplify the FT by removing one children gates. [default: false]
+    #[arg(short, long, default_value_t = false)]
     simplify: bool,
+    /// Get the number of sub-modules of the FT. [default: false]
+    #[arg(short, long, default_value_t = false)]
+    modularize: bool,
     /// If provided, postprocess the CNF formula by passing a CNF preprocessor. [default: None]
-    #[arg(long, default_value = None)]
+    #[arg(short, long, default_value = None)]
     preprocess: Option<String>,
 }
 #[derive(Parser, Debug, Clone)]
@@ -186,21 +189,33 @@ struct ExtraArgs {
 fn ft_info(command: InfoCommand) {
     let dft_filename = command.input;
     let simplify = command.simplify;
-    // let mut ft: FaultTree<String> = FaultTree::new();
-    let ft = FaultTree::new_from_file(&dft_filename, simplify, false);
-    // ft.read_from_file(&dft_filename, simplify);
     let path = Path::new(dft_filename.as_str());
     let model_name = path.file_name().unwrap();
-    let (num_be, num_gates, num_clauses) = ft.get_info(command.preprocess);
-    println!(
-        "{}",
+
+    let json_txt = if command.modularize {
+        let mut ft = FaultTree::new_from_file(&dft_filename, simplify, false);
+        let (num_be, num_gates, num_clauses) = ft.get_info(command.preprocess);
+        let module_ids = ft.modularize_ft();
+        let num_modules = module_ids.len();
+        json!({
+            "model": model_name.to_str(),
+            "num_basic_events": num_be,
+            "num_gates": num_gates,
+            "num_clauses": num_clauses,
+            "num_submodules": num_modules,
+        })
+    } else {
+        let ft = FaultTree::new_from_file(&dft_filename, simplify, false);
+        let (num_be, num_gates, num_clauses) = ft.get_info(command.preprocess);
         json!({
             "model": model_name.to_str(),
             "num_basic_events": num_be,
             "num_gates": num_gates,
             "num_clauses": num_clauses,
         })
-    );
+    };
+
+    println!("{}", json_txt);
 }
 
 /// Translates the FT explicit formula to a CNF file.
@@ -400,11 +415,6 @@ fn compute_importance_measures(command: ImportanceCommand) {
         .build_global()
         .unwrap();
     let max_size = command.config.max_cache_size / command.config.num_threads;
-
-    println!(
-        "{}. mcs: {} and #threads: {}",
-        max_size, command.config.max_cache_size, command.config.num_threads
-    );
     solver._set_cache_size(max_size);
 
     let ft = FaultTree::new_from_file(
@@ -416,7 +426,7 @@ fn compute_importance_measures(command: ImportanceCommand) {
 
     if command.config.verb {
         println!(
-            "Measuring Birnbaum and Criticality measure of {:?} basic events.",
+            "Measuring importance measures for {:?} basic events.",
             ft.get_info(None).0
         );
     }
