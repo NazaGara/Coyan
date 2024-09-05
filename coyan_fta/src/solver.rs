@@ -6,6 +6,7 @@ use rand::Rng;
 use std::fs;
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
+use std::time::Instant;
 
 pub trait Solver {
     fn _name(&self) -> String;
@@ -49,6 +50,7 @@ pub fn get_solver_from_path(path: &str) -> Box<dyn Solver + Sync> {
         x if x.contains("sharpsat") => Box::new(SharpsatTDSolver::new(path)),
         x if x.contains("addmc") => Box::new(ADDMCSolver::new(path)),
         x if x.contains("gpmc") => Box::new(GPMCSolver::new(path)),
+        x if x.contains("dmc") => Box::new(DMCSolver::new(path)),
         _ => panic!("Solver not supported. Supported solves: ADDMC - GPMC - SharpSAT-TD"),
     }
 }
@@ -133,15 +135,16 @@ impl Solver for SharpsatTDSolver {
                 let stderr = String::from_utf8(out.stderr.clone())
                     .unwrap()
                     .to_lowercase();
+                // empty means nothing went wrong. Clean and go.
                 if stderr.eq("") {
-                    // empty means nothing went wrong. Cleand and go next.
                     let _ = fs::remove_file(tmp_ft_file);
                     Ok(out)
+                // If it has something, check if is the killed signal
                 } else if stderr.eq("killed\n") {
-                    // If it has something, check if is the killed signal
                     Err("Execution timeout.")
+                // Something else failed, print error.
                 } else {
-                    ft.dump_cnf_to_file(String::from("failed.dft"), format, timebound, None, None);
+                    // ft.dump_cnf_to_file(String::from("failed.dft"), format, timebound, None, None);
                     println!("{:?}", stderr);
                     Err("Something went wrong...")
                 }
@@ -250,6 +253,136 @@ impl Solver for GPMCSolver {
             Err(_err) => Err("Solver Process had an error."),
         }
     }
+    fn get_tep(&self, result: Output) -> f64 {
+        let stdout =
+            String::from_utf8(result.stdout).expect("failed to produce the stdout of the solver");
+
+        let result_line = stdout
+            .split("\n")
+            .filter(|l| l.starts_with("c s exact double"))
+            .join("");
+
+        result_line
+            .split(" ")
+            .last()
+            .expect("Something went wrong while reading solver output")
+            .to_owned()
+            .parse()
+            .expect("Error while parsing value to float")
+    }
+}
+
+pub struct DMCSolver {
+    /// Path to the solver. Required.
+    dmc_path: String,
+    /// Path to the htb tool. Required. It is assumed that htb and dmc are in the same directory.
+    htb_path: String,
+    ///tpmdir -> the directory to store temporary files for running the tree decomposition. Required.
+    tmpdir: String,
+}
+
+impl DMCSolver {
+    pub fn new(path: &str) -> Self {
+        let dmc_path = String::from(path);
+        let htb_path = format!(
+            "{}{}",
+            path.strip_suffix("dmc")
+                .expect("DMC file does not end in dmc"),
+            "htb"
+        );
+        DMCSolver {
+            dmc_path,
+            htb_path,
+            tmpdir: String::from(".tmp"),
+        }
+    }
+
+    fn compute_joint_tree(&self, timeout_s: u64, filepath: &str) -> (String, u64) {
+        let mut c = Command::new("sh");
+        let time_start = Instant::now();
+        let cmd = format!(
+            "timeout -s kill {} {} --cf ./{}",
+            timeout_s,
+            self.htb_path.to_owned(),
+            filepath
+        );
+        c.arg("-c");
+        c.arg(cmd);
+        let out = c.output().expect("failed to execute tree decomposition");
+        let duration = time_start.elapsed();
+        (
+            String::from_utf8(out.stdout).expect("failed to produce the stdout of the solver"),
+            timeout_s - duration.as_secs(),
+        )
+    }
+}
+
+impl Solver for DMCSolver {
+    fn _name(&self) -> String {
+        String::from("DMC")
+    }
+    fn _set_cache_size(&mut self, _new_cs: usize) {
+        println!("WARNING!: Memory consumption of the DMC solver is not implemented.")
+    }
+
+    fn get_command(&self, timeout_s: u64) -> String {
+        format!("timeout -s KILL {}s {}", timeout_s, self.dmc_path)
+    }
+
+    fn run_model(
+        &self,
+        ft: &FaultTree<String>,
+        format: CNFFormat,
+        timebound: f64,
+        timeout_s: u64,
+        preprocess: Option<String>,
+    ) -> Result<Output, &'static str> {
+        let rnd_ft_file: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(5)
+            .map(char::from)
+            .collect();
+        let tmp_ft_file = format!("{}/{}", self.tmpdir, rnd_ft_file);
+        ft.dump_cnf_to_file(tmp_ft_file.clone(), format, timebound, None, preprocess);
+        let (heuristic_tree, remaining_s) = self.compute_joint_tree(timeout_s, &tmp_ft_file);
+
+        let solver_cmd: String = format!("{} --cf {}", self.get_command(remaining_s), tmp_ft_file);
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(solver_cmd)
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("Failed to spawn child process");
+
+        let mut stdin = child.stdin.take().expect("Failed to open stdin");
+        std::thread::spawn(move || {
+            stdin
+                .write_all(heuristic_tree.as_bytes())
+                .expect("Failed to write to stdin");
+        });
+
+        match child.wait_with_output() {
+            Ok(out) => {
+                let stderr = String::from_utf8(out.stderr.clone())
+                    .unwrap()
+                    .to_lowercase();
+                if stderr.eq("") {
+                    // empty means nothing went wrong
+                    Ok(out)
+                } else if stderr.eq("killed\n") {
+                    // If it has something, check if is the killed signal
+                    Err("Execution timeout.")
+                } else {
+                    println!("{:?}", stderr);
+                    Err("Something went wrong.")
+                }
+            }
+            Err(_err) => Err("Solver Process had an error."),
+        }
+    }
+
     fn get_tep(&self, result: Output) -> f64 {
         let stdout =
             String::from_utf8(result.stdout).expect("failed to produce the stdout of the solver");
