@@ -309,6 +309,7 @@ fn compute_tep(command: SolveCommand) {
         command.config.negate_or,
     );
     let mut solver: Box<dyn Solver + Sync> = get_solver_from_path(&solver_path);
+    solver._set_cache_size(command.config.max_cache_size);
     match command.timebounds.clone() {
         None => {
             let tep = solver.compute_probabilty(

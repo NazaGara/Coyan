@@ -210,6 +210,15 @@ impl FaultTree<String> {
             None => format!("{}\n{}\n", problem_line, formula_str),
         };
 
+        let formula_cnf = if formula_cnf
+            .split("\n")
+            .any(|l| l.starts_with("c Solved by preprocessing"))
+        {
+            format!("{}\n{}\n", problem_line, formula_str)
+        } else {
+            formula_cnf
+        };
+
         let weights = format!("{}\n{}", be_weights, gate_weights);
 
         (formula_cnf, weights)
