@@ -14,7 +14,7 @@ cargo build --release
 
 ## Usage
 
-The tool currently posses the modules for `Fault Tree Analysis` [coyan_fta](https://github.com/NazaGara/Coyan/tree/main/coyan_fta) and for `Random Fault Tree Generation` [coyan_rft](https://github.com/NazaGara/Coyan/tree/main/coyan_rft). Both of them can be used via the command line interface [coyan-cli](https://github.com/NazaGara/Coyan/tree/main/coyan-cli).
+The tool currently posses the modules for `Fault Tree Analysis` [coyan_fta](https://github.com/NazaGara/Coyan/tree/main/coyan_fta) and for `Random Fault Tree Generation` [coyan_rft](https://github.com/NazaGara/Coyan/tree/main/coyan_rft). Both of them can be used via the command line interface [coyan-cli](https://github.com/NazaGara/Coyan/tree/main/coyan_cli).
 
 ## License
 
