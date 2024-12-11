@@ -1,5 +1,6 @@
 use index_vec::IndexVec;
 use indicatif::ParallelProgressIterator;
+// use indicatif::ParallelProgressIterator;
 use itertools::Itertools;
 use nodes::{Node, NodeId, NodeType};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
@@ -33,11 +34,11 @@ where
     fn clone(&self) -> Self {
         FaultTree {
             nodes: self.nodes.clone(),
-            root_id: self.root_id.clone(),
+            root_id: self.root_id,
             node_counter: AtomicUsize::new(
                 self.node_counter.load(std::sync::atomic::Ordering::Relaxed),
             ),
-            negate_or: self.negate_or.clone(),
+            negate_or: self.negate_or,
         }
     }
 }
@@ -57,7 +58,7 @@ pub struct FaultTree<T> {
 }
 
 impl FaultTree<String> {
-    pub fn _empty() -> Self {
+    pub fn empty() -> Self {
         FaultTree {
             nodes: IndexVec::new(),
             root_id: NodeId::new(0),
@@ -76,8 +77,63 @@ impl FaultTree<String> {
     }
 
     /// Internal method, changes the id of the root node.
-    fn set_root(&mut self, new_root_id: NodeId) {
+    fn _set_root(&mut self, new_root_id: NodeId) {
         self.root_id = new_root_id;
+    }
+
+    /// Add the node to the fields of the struct.
+    pub fn add_node(&mut self, node: Node<String>, nid: NodeId) {
+        self.nodes.insert(nid, node)
+    }
+
+    fn new_id(&self) -> NodeId {
+        NodeId::new(
+            self.node_counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// Update the roots of a Node in the nodes fields.
+    pub fn update_roots(&mut self, new_node: Node<String>, nid: NodeId) {
+        self.nodes.remove(nid);
+        self.nodes.insert(nid, new_node);
+    }
+
+    /// Creates a new Fault Tree that is a submodule from the orignal one.
+    /// It only contains the nodes that are used in the subtree
+    pub fn subtree_with_root(&self, new_root_id: NodeId) -> FaultTree<String> {
+        // Create New Fault Tree
+        let mut sub_ft = FaultTree::empty();
+
+        // Create a mapper to relate the old NodeIds to the new ones.
+        let mut new_id_mapper = HashMap::new();
+
+        // Create new ids for each children and add them to the subtree.
+        let mut to_process = vec![new_root_id];
+        while !to_process.is_empty() {
+            let nid = to_process.pop().unwrap();
+            let node = self.nodes[nid].clone();
+            let children = node.get_children_ids();
+            let new_nid = sub_ft.new_id();
+
+            new_id_mapper.insert(nid, new_nid);
+            sub_ft.add_node(node, new_nid);
+            to_process.append(
+                &mut children
+                    .into_iter()
+                    .filter(|c_id| !new_id_mapper.contains_key(c_id))
+                    .collect(),
+            );
+        }
+
+        // For each node, use the mapper to replace the node arguments.
+        let _ = sub_ft
+            .nodes
+            .iter_mut()
+            .map(|node| node.map_to_args(&new_id_mapper))
+            .collect_vec();
+
+        sub_ft
     }
 
     /// Return number of nodes in the tree.
@@ -119,7 +175,7 @@ impl FaultTree<String> {
     }
 
     /// Apply the tseitin transformation to all the nodes in the tree.
-    fn apply_tseitin(&self) -> Formula<NodeId> {
+    pub fn apply_tseitin(&self) -> Formula<NodeId> {
         let mut args = if self.nodes[self.root_id].kind.is_or() && self.negate_or {
             vec![Formula::Not(Box::new(Formula::Atom(self.root_id)))]
         } else {
@@ -127,6 +183,40 @@ impl FaultTree<String> {
         };
 
         for (nid, node) in self.nodes.iter_enumerated() {
+            match node.tseitin_transformation(nid) {
+                Formula::And(or_args) => args.extend(or_args),
+                Formula::Or(literals) => args.push(Formula::Or(literals)),
+                Formula::_True => {}
+                _ => panic!("Something went wrong while translating the Tseitin transformation."),
+            }
+        }
+
+        Formula::And(args)
+    }
+
+    /// Apply the tseitin transformation to all the nodes in the tree.
+    pub fn apply_tseitin_used_only(&self) -> Formula<NodeId> {
+        let mut args = if self.nodes[self.root_id].kind.is_or() && self.negate_or {
+            vec![Formula::Not(Box::new(Formula::Atom(self.root_id)))]
+        } else {
+            vec![Formula::Atom(self.root_id)]
+        };
+
+        let mut to_process = vec![self.root_id];
+        let mut seen = vec![self.root_id];
+        while !to_process.is_empty() {
+            let nid = to_process.pop().unwrap();
+            let node = self.nodes[nid].clone();
+            let mut children = node.get_children_ids();
+
+            seen.append(&mut children);
+
+            let mut unseen_children = children
+                .into_iter()
+                .filter(|cid| seen.contains(cid))
+                .collect_vec();
+            to_process.append(&mut unseen_children);
+
             match node.tseitin_transformation(nid) {
                 Formula::And(or_args) => args.extend(or_args),
                 Formula::Or(literals) => args.push(Formula::Or(literals)),
@@ -174,6 +264,7 @@ impl FaultTree<String> {
         timepoint: f64,
         preprocess: Option<String>,
     ) -> (String, String) {
+        // let cnf_formula = self.apply_tseitin();
         let cnf_formula = self.apply_tseitin();
         let text_formula = cnf_formula.to_text();
         let n_vars = self.get_count();
@@ -426,30 +517,22 @@ impl FaultTree<String> {
         format: CNFFormat,
         timepoint: f64,
         timeout_s: u64,
-        num_workers: usize,
+        num_threads: usize,
         negate_or: bool,
         display: bool,
     ) {
         // Chunk size should be related to the FT, not to the #threads.
         // But, to exploit parallelism, it should hold that chunk_size > #num_threads
-        let chunk_size = std::cmp::max(module_ids.len().div_ceil(10), num_workers);
+        let chunk_size = std::cmp::max(module_ids.len().div_ceil(num_threads), num_threads);
         if display {
-            println!(
-                "Running {:?} modules, over {} threads, in chunks of size {}.",
-                module_ids.len(),
-                num_workers,
-                chunk_size
-            );
             // Compute the modules by chunks, could be more efficient if we take consideration of depth
             for chunk in module_ids.chunks(chunk_size).into_iter() {
-                // let to_replace: Vec<(NodeId, Node<String>)> = chunk.par_iter().progress_count(chunk_size as u64).map(|&mod_id|{
                 let to_replace: Vec<(NodeId, Node<String>)> = chunk
                     .par_iter()
                     .panic_fuse()
                     .progress()
                     .map(|&mod_id| {
-                        let mut mod_ft = self.clone();
-                        mod_ft.set_root(mod_id);
+                        let mod_ft = self.subtree_with_root(mod_id);
                         let tep = solver.compute_probabilty(
                             &mod_ft, format, timepoint, timeout_s, None, negate_or,
                         );
@@ -470,8 +553,7 @@ impl FaultTree<String> {
                 let to_replace: Vec<(NodeId, Node<String>)> = chunk
                     .par_iter()
                     .map(|&mod_id| {
-                        let mut mod_ft = self.clone();
-                        mod_ft.set_root(mod_id);
+                        let mod_ft = self.subtree_with_root(mod_id);
                         let tep = solver.compute_probabilty(
                             &mod_ft, format, timepoint, timeout_s, None, negate_or,
                         );

@@ -119,7 +119,7 @@ fn snd_dfs(
         ..
     } = nodes[curr_idx];
 
-    // Compare current times with teh descendency times
+    // Compare current times with the descendency times
     (
         std::cmp::min(curr_min, t_fst_node),
         std::cmp::max(curr_max, t_lst_node),

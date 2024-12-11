@@ -1,0 +1,17 @@
+[package]
+name = "coyan-cli"
+version = "0.1.0"
+edition = "2021"
+description = "A tool for Fault Tree Analysis using Model Counting."
+authors = ["Nazareno Garagiola <garagiola@depend.uni-saarland.de>"]
+license = "MIT"
+repository = "https://github.com/NazaGara/Coyan"
+
+[dependencies]
+coyan_fta = { path = "../coyan_fta" }
+coyan_rft = { path = "../coyan_rft" }
+clap = { version = "4.4.8", features = ["derive"] }
+itertools = "0.12.0"
+rayon = "1.8.0"
+serde_json = "1.0.120"
+rand = "0.8.5"

@@ -1,9 +1,6 @@
 [workspace]
-members = [
-    "coyan_fta",
-    "coyan_rft"
-]
-resolver = "2" 
+members = ["coyan_*"]
+resolver = "2"
 exclude = ["private"]
 
 [profile.release]

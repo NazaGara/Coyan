@@ -1,27 +1,23 @@
 use clap::Parser;
-use fault_tree::FaultTree;
-use formula::CNFFormat;
+use coyan_fta::fault_tree::FaultTree;
+use coyan_fta::formula::CNFFormat;
+use coyan_fta::solver::*;
+use coyan_rft::random_fault_trees::{RFTConfig, RFaultTree};
 use itertools::Itertools;
-use rayon::prelude::*;
+use rand::Rng;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde_json::json;
-use solver::*;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 use std::{fmt::Debug, str::FromStr};
-
-mod fault_tree;
-mod fault_tree_normalizer;
-mod formula;
-mod modularizer;
-mod nodes;
-mod preproc;
-mod solver;
+use structs::{RandomGenerationCommand, *};
+mod structs;
 
 #[derive(Parser, Debug)]
 #[command(
     author = "Nazareno Garagiola",
-    version = "0.2",
+    version = "0.1",
     about = "
         Coyan is a Rust project that transforms Static Fault Trees into CNF equisatisfiables formulas. 
         Then, with the use of a Model Counter, computes the Top Event Probabilty (TEP) of failure at one or more given time points.
@@ -51,138 +47,11 @@ enum Command {
     )]
     Importance(ImportanceCommand),
     #[clap(
-        about = "Modularize the input FT into all his modules, compute the TEP of each module and replace the gate with a Basic Event, where the probability is the obtained TEP of the module. Finally, compute the TEP of the entire FT."
+        about = "Modularize the input FT, compute the TEP of each module and replace it with a BE with the same probability. Finally, obtain the TEP of the entire FT."
     )]
     Modularize(ModCommand),
-}
-
-#[derive(Parser, Debug, Clone)]
-struct InfoCommand {
-    /// Input file containing the fault tree in GALILEO format.
-    #[arg(short, long, required = true)]
-    input: String,
-    /// Simplify the FT by removing one children gates. [default: false]
-    #[arg(short, long, default_value_t = false)]
-    simplify: bool,
-    /// Get the number of sub-modules of the FT. [default: false]
-    #[arg(short, long, default_value_t = false)]
-    modularize: bool,
-    /// If provided, postprocess the CNF formula by passing a CNF preprocessor. [default: None]
-    #[arg(short, long, default_value = None)]
-    preprocess: Option<String>,
-}
-#[derive(Parser, Debug, Clone)]
-struct SolveCommand {
-    /// Input file containing the fault tree in GALILEO format.
-    #[arg(short, long, required = true)]
-    input: String,
-    /// Solver path and arguments.
-    #[arg(short, long)]
-    solver_path: String,
-    /// Time bounds, creates a range of values according to the command arguments: [start, end, step].
-    #[arg(
-        long,
-        value_delimiter = ' ',
-        num_args = 3,
-        conflicts_with = "timepoint"
-    )]
-    timebounds: Option<Vec<f64>>,
-    /// Compute TEP of the FT a given timepoint. Conflicts with `timebounds`.
-    #[arg(short, long, default_value_t = 1.0, conflicts_with = "timebounds")]
-    timepoint: f64,
-    /// Execution configuration parameters.
-    #[command(flatten)]
-    config: ExtraArgs,
-}
-
-#[derive(Parser, Debug, Clone)]
-struct TranslateCommand {
-    /// Input file containing the fault tree in GALILEO format.
-    #[arg(short, long, required = true)]
-    input: String,
-    /// Output file, writes a .wcnf file.
-    #[arg(short, long)]
-    output: String,
-    /// Time bounds, creates a range of values according to the command arguments: [start, end, step]. Conflicts with `timepoint`.
-    #[arg(
-        long,
-        value_delimiter = ' ',
-        num_args = 3,
-        conflicts_with = "timepoint"
-    )]
-    timebounds: Option<Vec<f64>>,
-    /// If provided, the weights will be written to a separate file.
-    #[arg(long)]
-    w_file: Option<String>,
-    /// Compute TEP of the FT a given timepoint. Conflicts with `timebounds`.
-    #[arg(short, long, default_value_t = 1.0, conflicts_with = "timebounds")]
-    timepoint: f64,
-    /// Execution configuration parameters.
-    #[command(flatten)]
-    config: ExtraArgs,
-}
-
-#[derive(Parser, Debug, Clone)]
-struct ModCommand {
-    /// Input file containing the fault tree in GALILEO format.
-    #[arg(short, long, required = true)]
-    input: String,
-    /// Solver path and arguments.
-    #[arg(short, long)]
-    solver_path: String,
-    /// Compute TEP of the FT a given timepoint.
-    #[arg(short, long, default_value_t = 1.0)]
-    timepoint: f64,
-    /// Execution configuration parameters.
-    #[command(flatten)]
-    config: ExtraArgs,
-}
-
-#[derive(Parser, Debug, Clone)]
-struct ImportanceCommand {
-    /// Input file containing the fault tree in GALILEO format.
-    #[arg(short, long, required = true)]
-    input: String,
-    /// Solver path and arguments.
-    #[arg(short, long)]
-    solver_path: String,
-    /// Timepoint to compute the true TEP and the measures for each basic event.
-    #[arg(short, long, default_value_t = 1.0)]
-    timepoint: f64,
-    /// Execution configuration parameters.
-    #[command(flatten)]
-    config: ExtraArgs,
-}
-
-#[derive(Parser, Debug, Clone)]
-struct ExtraArgs {
-    /// Max cache size to distribute between the threads in KB. [default: 3500]
-    #[arg(long, default_value_t = 3500)]
-    max_cache_size: usize,
-    /// Negate top gate if is an OR, to favor UnitPropagation. [default: false]
-    #[arg(short, long, default_value_t = false)]
-    negate_or: bool,
-    /// Execution timeout for the WMC solver in seconds.
-    #[arg(long, default_value_t = 300)]
-    timeout_s: u64,
-    /// Output format for the CNF formula. The format gives the extension to the file. Support values `MC21` and `MCC` [default: `MC21`]
-    #[arg(long, default_value = "MC21")]
-    format: String,
-    /// Number of threads to use.
-    #[arg(long, default_value_t = 1)]
-    num_threads: usize,
-    /// Verbosity, if true prints more information. [default: false]
-    #[arg(long, default_value_t = false)]
-    verb: bool,
-    /// Display progress bars, if possible. [default: false]
-    #[arg(long, default_value_t = false)]
-    display: bool,
-    /// Simplify the FT by removing one children gates. [default: true]
-    #[arg(long, default_value_t = true)]
-    simplify: bool,
-    /// If provided, postprocess the CNF formula by passing a CNF preprocessor. [default: None]
-    #[arg(long, default_value = None)]
-    preprocess: Option<String>,
+    #[clap(about = "Generate a Static Random FT.")]
+    RFT(RandomGenerationCommand),
 }
 
 /// Outputs relevant information about the FT.
@@ -191,31 +60,25 @@ fn ft_info(command: InfoCommand) {
     let simplify = command.simplify;
     let path = Path::new(dft_filename.as_str());
     let model_name = path.file_name().unwrap();
-
-    let json_txt = if command.modularize {
-        let mut ft = FaultTree::new_from_file(&dft_filename, simplify, false);
-        let (num_be, num_gates, num_clauses) = ft.get_info(command.preprocess);
-        let module_ids = ft.modularize_ft();
-        let num_modules = module_ids.len();
-        json!({
-            "model": model_name.to_str(),
-            "num_basic_events": num_be,
-            "num_gates": num_gates,
-            "num_clauses": num_clauses,
-            "num_submodules": num_modules,
-        })
+    let mut ft = FaultTree::new_from_file(&dft_filename, simplify, false);
+    let top_type = ft.nodes[ft.root_id].kind.type_is();
+    let (num_be, num_gates, num_clauses) = ft.get_info(command.preprocess);
+    let num_modules = if command.modularize {
+        Some(ft.modularize_ft().len())
     } else {
-        let ft = FaultTree::new_from_file(&dft_filename, simplify, false);
-        let (num_be, num_gates, num_clauses) = ft.get_info(command.preprocess);
+        None
+    };
+    println!(
+        "{}",
         json!({
             "model": model_name.to_str(),
+            "top type": top_type,
             "num_basic_events": num_be,
             "num_gates": num_gates,
             "num_clauses": num_clauses,
+            "num_submodules": num_modules
         })
-    };
-
-    println!("{}", json_txt);
+    );
 }
 
 /// Translates the FT explicit formula to a CNF file.
@@ -233,7 +96,7 @@ fn translate(command: TranslateCommand) {
     let ft = FaultTree::new_from_file(&dft_filename, simplify, command.config.negate_or);
     match command.timebounds {
         None => {
-            let cnf_path = format!("{}_t={}.wcnf", cnf_filename, command.timepoint);
+            let cnf_path = format!("{}.cnf", cnf_filename);
             ft.dump_cnf_to_file(
                 cnf_path,
                 format,
@@ -415,6 +278,7 @@ fn compute_importance_measures(command: ImportanceCommand) {
         .num_threads(command.config.num_threads)
         .build_global()
         .unwrap();
+
     let max_size = command.config.max_cache_size / command.config.num_threads;
     solver._set_cache_size(max_size);
 
@@ -425,7 +289,7 @@ fn compute_importance_measures(command: ImportanceCommand) {
     );
     let time_start = Instant::now();
 
-    if command.config.verb {
+    if command.config.display {
         println!(
             "Measuring importance measures for {:?} basic events.",
             ft.get_info(None).0
@@ -462,7 +326,7 @@ fn modularize_ft(command: ModCommand) {
         .unwrap();
 
     // Distribute cache use for each thread.
-    let max_size = (3500.0 / command.config.num_threads as f32) as usize;
+    let max_size = command.config.max_cache_size / command.config.num_threads;
     solver._set_cache_size(max_size);
 
     let mut ft = FaultTree::new_from_file(
@@ -470,13 +334,14 @@ fn modularize_ft(command: ModCommand) {
         command.config.simplify,
         command.config.negate_or,
     );
+
+    let info_pre = ft.get_info(None);
+
     let time_start = Instant::now();
-
     let mut module_ids = ft.modularize_ft();
-    let n_modules = module_ids.len();
-
+    let num_modules = module_ids.len();
     // The DFS search leaves the bottom module ids on the end, by reversing it,
-    // we make sure that it starts replacing the modules that are deep in the tree.
+    // we make sure that it starts replacing the modules that are deeper in the tree.
     module_ids.reverse();
 
     ft.replace_modules(
@@ -490,8 +355,18 @@ fn modularize_ft(command: ModCommand) {
         command.config.display,
     );
 
+    let time_modularisation = time_start.elapsed();
+    let info_post = ft.get_info(None);
     // Reset Cache max size for the last execution.
-    solver._set_cache_size(3500);
+    solver._set_cache_size(command.config.max_cache_size);
+
+    if command.config.display {
+        println!(
+            "Replaced a total of {:?} modules. From {:?} to {:?} (BEs, Gates, Clauses).\nSolving final Fault Tree.",
+            num_modules, info_pre, info_post
+        );
+    }
+    let time_start = Instant::now();
 
     let tep = solver.compute_probabilty(
         &ft,
@@ -502,16 +377,81 @@ fn modularize_ft(command: ModCommand) {
         command.config.negate_or,
     );
     let elapsed = time_start.elapsed();
+
     println!(
         "{}",
         json!({
-            "#modules" : n_modules,
+            "#modules" : num_modules,
             "model": model_name.to_str(),
             "timepoint": command.timepoint,
             "TEP": tep,
             "duration": format!("{:?}", elapsed),
+            "duration_mod": format!("{:?}", time_modularisation),
         })
     );
+}
+
+fn random_ft(comm: RandomGenerationCommand) {
+    let n_nodes = comm.n_nodes;
+    let rates = vec![comm.rate_be, comm.rate_and, comm.rate_or, comm.rate_vot];
+    let output_filename = comm.output;
+    let seed = comm.seed;
+
+    let seed = match seed {
+        None => {
+            let mut rng = rand::thread_rng();
+            rng.gen_range(u16::MIN..u16::MAX) as u64
+        }
+        Some(u) => u,
+    };
+
+    let output_filename = if !output_filename.ends_with(".dft") {
+        format!("{}.dft", output_filename)
+    } else {
+        output_filename
+    };
+
+    let config = RFTConfig::from_vec(rates);
+    let solver_cmd = &comm.solver_path;
+
+    let start = Instant::now();
+    let rft = RFaultTree::new_random(
+        n_nodes,
+        config,
+        comm.prob_multiplier,
+        comm.perc_last,
+        seed,
+        comm.max_n_children,
+    );
+
+    match solver_cmd {
+        Option::None => {
+            rft.save_to_dft(output_filename);
+            let duration = start.elapsed();
+            println!(
+                "{}",
+                json!({
+                    "time_elapsed": format!("{:?}", duration),
+                })
+            );
+        }
+        Option::Some(cmd) => {
+            let solver = get_solver_from_path(&cmd);
+            rft.save_to_dft(output_filename);
+            let ft = rft.extract_ft();
+            let wmc =
+                solver.compute_probabilty(&ft, CNFFormat::MC21, 1.0, comm.timeout_s, None, false);
+            let duration = start.elapsed();
+
+            println!(
+                "{}",
+                json!({
+                    "tep": wmc,
+                    "time_elapsed": format!("{:?}", duration),
+                })
+            );
+        }
+    }
 }
 
 fn main() {
@@ -522,5 +462,6 @@ fn main() {
         Command::Translate(command) => translate(command),
         Command::Importance(command) => compute_importance_measures(command),
         Command::Modularize(command) => modularize_ft(command),
+        Command::RFT(command) => random_ft(command),
     }
 }

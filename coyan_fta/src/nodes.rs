@@ -1,7 +1,10 @@
 use crate::formula::Formula;
 use index_vec::IndexVec;
 use itertools::Itertools;
-use std::fmt::{self, Debug, Display};
+use std::{
+    collections::HashMap,
+    fmt::{self, Debug, Display},
+};
 
 index_vec::define_index_type! {
     pub struct NodeId = usize;
@@ -35,6 +38,21 @@ pub enum NodeType<T> {
     PlaceHolder(T, String, Vec<T>),
 }
 
+impl<T> PartialEq for NodeType<T> {
+    fn eq(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::BasicEvent(_, _, _), Self::BasicEvent(_, _, _))
+                | (Self::Not(_), Self::Not(_))
+                | (Self::And(_), Self::And(_))
+                | (Self::Or(_), Self::Or(_))
+                | (Self::Vot(_, _), Self::Vot(_, _))
+                | (Self::Xor(_), Self::Xor(_))
+                | (Self::PlaceHolder(_, _, _), Self::PlaceHolder(_, _, _)),
+        )
+    }
+}
+
 /// Implementation of the nodes.
 impl<T> NodeType<T>
 where
@@ -57,6 +75,18 @@ where
         match self {
             NodeType::Or(_) => true,
             _ => false,
+        }
+    }
+
+    pub fn type_is(&self) -> String {
+        match self {
+            NodeType::BasicEvent(_, _, _) => String::from("basic event"),
+            NodeType::Not(_) => String::from("not"),
+            NodeType::And(_) => String::from("and"),
+            NodeType::Or(_) => String::from("or"),
+            NodeType::Vot(_, _) => String::from("vot"),
+            NodeType::Xor(_) => String::from("xor"),
+            NodeType::PlaceHolder(_, _, _) => String::from("placeholder"),
         }
     }
 
@@ -144,6 +174,62 @@ where
 
     pub fn get_formula(&self) -> Formula<T> {
         self.formula.clone()
+    }
+
+    pub fn map_to_args(&mut self, mapper: &HashMap<NodeId, NodeId>) {
+        let new_type: NodeType<T> = match &self.kind {
+            NodeType::PlaceHolder(_, _, _) => return,
+            NodeType::BasicEvent(_, _, _) => return,
+            NodeType::Not(arg) => NodeType::Not(mapper.get(arg).unwrap().to_owned()),
+            NodeType::And(args) => NodeType::And(
+                args.into_iter()
+                    .map(|a| mapper.get(a).unwrap().to_owned())
+                    .collect_vec(),
+            ),
+            NodeType::Or(args) => NodeType::Or(
+                args.into_iter()
+                    .map(|a| mapper.get(a).unwrap().to_owned())
+                    .collect_vec(),
+            ),
+            NodeType::Xor(args) => NodeType::Xor(
+                args.into_iter()
+                    .map(|a| mapper.get(a).unwrap().to_owned())
+                    .collect_vec(),
+            ),
+            NodeType::Vot(k, args) => NodeType::Vot(
+                k.to_owned(),
+                args.into_iter()
+                    .map(|a| mapper.get(a).unwrap().to_owned())
+                    .collect_vec(),
+            ),
+        };
+        *self = Node::new(new_type);
+    }
+
+    pub fn is_gate(&self) -> bool {
+        match &self.kind {
+            NodeType::PlaceHolder(_, _, _) => false,
+            NodeType::BasicEvent(_, _, _) => false,
+            NodeType::Not(_) => true,
+            NodeType::And(_) => true,
+            NodeType::Or(_) => true,
+            NodeType::Xor(_) => true,
+            NodeType::Vot(_, _) => true,
+        }
+    }
+
+    pub fn get_children_ids(&self) -> Vec<NodeId> {
+        match &self.kind {
+            NodeType::PlaceHolder(_, _, _) => {
+                panic!("Cant apply Tseitin transform to placeholder node.")
+            }
+            NodeType::BasicEvent(_, _, _) => vec![],
+            NodeType::Not(arg) => vec![*arg],
+            NodeType::And(args) => args.to_vec(),
+            NodeType::Or(args) => args.to_vec(),
+            NodeType::Xor(args) => args.to_vec(),
+            NodeType::Vot(_, args) => args.to_vec(),
+        }
     }
 
     /// Apply the Tseitin rule for the AND NodeType.

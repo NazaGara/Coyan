@@ -114,7 +114,7 @@ impl FaultTreeNormalizer<String> {
                 {
                     let name = name.replace("\"", "").replace(";", "");
                     if self.lookup_table.contains_key(&name) {
-                        panic!("Name of Gate {} already in use.", name)
+                        panic!("Name of Gate '{}' already in use.", name)
                     }
                     let args = args
                         .iter()
@@ -164,6 +164,12 @@ impl FaultTreeNormalizer<String> {
                         .replace(";", "")
                         .parse()
                         .expect("Error while parsing value for basic event");
+                    if method.eq("prob") && (prob > 1.0 || prob < 0.0) {
+                        panic!(
+                            "Invald probability value for basic event {}. Value: {}",
+                            name, prob
+                        )
+                    }
                     let nid = self.new_id();
                     let node = Node::new(NodeType::BasicEvent(
                         name.to_owned(),
@@ -176,7 +182,7 @@ impl FaultTreeNormalizer<String> {
             };
         }
         if simplify {
-            self.preprocess_placeholders(replace_mapper)
+            self.preprocess_placeholders(replace_mapper);
         };
         root_name
     }

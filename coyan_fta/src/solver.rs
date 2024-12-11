@@ -8,6 +8,29 @@ use std::io::Write;
 use std::process::{Command, Output, Stdio};
 use std::time::Instant;
 
+pub struct Config {
+    /// Max cache size to distribute between the threads in KB. [default: 3500]
+    pub max_cache_size: usize,
+    /// Negate top gate if is an OR, to favor UnitPropagation. [default: false]
+    pub negate_or: bool,
+    /// Execution timeout for the WMC solver in seconds.
+    pub timeout_s: u64,
+    /// Output format for the CNF formula. The format gives the extension to the file. Support values `MC21` and `MCC` [default: `MC21`]
+    pub format: String,
+    /// Number of threads to use.
+    pub num_threads: usize,
+    /// Verbosity, if true prints more information. [default: false]
+    pub verb: bool,
+    /// Display progress bars, if possible. [default: false]
+    pub display: bool,
+    /// Simplify the FT by removing one children gates. [default: true]
+    pub simplify: bool,
+    /// If provided, postprocess the CNF formula by passing a CNF preprocessor. [default: None]
+    pub preprocess: Option<String>,
+}
+
+// impl From for Config {}
+
 pub trait Solver {
     fn _name(&self) -> String;
     fn get_command(&self, timeout_s: u64) -> String;
@@ -30,16 +53,29 @@ pub trait Solver {
         negate_top_or: bool,
     ) -> f64 {
         let top_is_or = ft.nodes[ft.root_id].kind.is_or();
-        match self.run_model(ft, format, timepoint, timeout_s, preprocess) {
-            Ok(value) => {
-                let wmc_res = self.get_tep(value);
-                if top_is_or && negate_top_or {
-                    1.0 - wmc_res
-                } else {
-                    wmc_res
-                }
+        if ft.nodes[ft.root_id].kind.type_is().eq("basic event") {
+            if ft.nodes[ft.root_id]
+                .kind
+                .get_method()
+                .to_lowercase()
+                .eq("prob")
+            {
+                ft.nodes[ft.root_id].kind.get_prob()
+            } else {
+                1.0 - (-ft.nodes[ft.root_id].kind.get_prob() * timepoint).exp()
             }
-            Err(msg) => panic!("{:?}", msg),
+        } else {
+            match self.run_model(ft, format, timepoint, timeout_s, preprocess) {
+                Ok(value) => {
+                    let wmc_res = self.get_tep(value);
+                    if top_is_or && negate_top_or {
+                        1.0 - wmc_res
+                    } else {
+                        wmc_res
+                    }
+                }
+                Err(msg) => panic!("{:?}", msg),
+            }
         }
     }
     fn _set_cache_size(&mut self, new_cs: usize);
@@ -69,7 +105,7 @@ pub struct SharpsatTDSolver {
     ///prec -> the number of digits in output of weighted model counting. Does not affect the internal precision.
     precision: usize,
     ///cs -> limit of the cache size. If the memory upper bound is X megabytes, then the value here should be around x/2-500.
-    cs: usize,
+    cs: Option<usize>,
 }
 
 impl SharpsatTDSolver {
@@ -77,11 +113,11 @@ impl SharpsatTDSolver {
         SharpsatTDSolver {
             path: String::from(path),
             // we: true,
-            decot: 1,
+            decot: 2,
             decow: 1,
             tmpdir: String::from(".tmp"),
             precision: 20,
-            cs: 3500,
+            cs: None,
         }
     }
 }
@@ -92,14 +128,20 @@ impl Solver for SharpsatTDSolver {
     }
 
     fn get_command(&self, timeout_s: u64) -> String {
-        format!(
-            "timeout -s KILL {}s {} -WE -decot {} -decow {} -tmpdir {} -prec {} -cs {}",
-            timeout_s, self.path, self.decot, self.decow, self.tmpdir, self.precision, self.cs
-        )
+        match self.cs {
+            Some(v) => format!(
+                "timeout -s KILL {}s {} -WE -decot {} -decow {} -tmpdir {} -prec {} -cs {}",
+                timeout_s, self.path, self.decot, self.decow, self.tmpdir, self.precision, v
+            ),
+            None => format!(
+                "timeout -s KILL {}s {} -WE -decot {} -decow {} -tmpdir {} -prec {}",
+                timeout_s, self.path, self.decot, self.decow, self.tmpdir, self.precision
+            ),
+        }
     }
 
     fn _set_cache_size(&mut self, new_cs: usize) {
-        self.cs = new_cs
+        self.cs = Some(new_cs)
     }
 
     fn run_model(
@@ -181,7 +223,7 @@ pub struct GPMCSolver {
     /// -prec=<1..intmax> -> set the precision of floating-point numbers (default: 15).
     prec: usize,
     /// -cs=<1..intmax> -> set maximum component cache size (MB) (default: 4000)
-    cs: usize,
+    cs: Option<usize>,
 }
 
 impl GPMCSolver {
@@ -189,7 +231,7 @@ impl GPMCSolver {
         GPMCSolver {
             path: String::from(path),
             mode: 1,
-            cs: 3500,
+            cs: None,
             prec: 15,
         }
     }
@@ -201,14 +243,20 @@ impl Solver for GPMCSolver {
     }
 
     fn _set_cache_size(&mut self, new_cs: usize) {
-        self.cs = new_cs
+        self.cs = Some(new_cs)
     }
 
     fn get_command(&self, timeout_s: u64) -> String {
-        format!(
-            "timeout -s KILL {}s {} -mode={} -cs={} -prec={}",
-            timeout_s, self.path, self.mode, self.cs, self.prec
-        )
+        match self.cs {
+            Some(v) => format!(
+                "timeout -s KILL {}s {} -mode={} -cs={} -prec={}",
+                timeout_s, self.path, self.mode, v, self.prec
+            ),
+            None => format!(
+                "timeout -s KILL {}s {} -mode={} -prec={}",
+                timeout_s, self.path, self.mode, self.prec
+            ),
+        }
     }
 
     fn run_model(
@@ -256,7 +304,7 @@ impl Solver for GPMCSolver {
     fn get_tep(&self, result: Output) -> f64 {
         let stdout =
             String::from_utf8(result.stdout).expect("failed to produce the stdout of the solver");
-
+        // There is an error, that from time to time, GPMC just gets a SIGNAL 11 and finishes.
         let result_line = stdout
             .split("\n")
             .filter(|l| l.starts_with("c s exact double"))
@@ -322,7 +370,7 @@ impl Solver for DMCSolver {
         String::from("DMC")
     }
     fn _set_cache_size(&mut self, _new_cs: usize) {
-        println!("WARNING!: Memory consumption of the DMC solver is not implemented.")
+        println!("WARNING!: Limit on memory consumption of the DMC solver is not implemented.")
     }
 
     fn get_command(&self, timeout_s: u64) -> String {

@@ -56,10 +56,11 @@ impl RFaultTree<String> {
         max_number_children: usize,
     ) -> Self {
         let mut rng = StdRng::seed_from_u64(seed);
+        assert!(config.0 < 1.0, "The rate of basic events can't be 1.");
         let n_be = (config.0 * n_nodes as f64) as usize;
+        assert!(n_be > 1, "We need at least more than 2 Basic Events.");
         let n_gates = (n_nodes - n_be) - 1;
         let (p_and, p_or, _p_vot) = (config.1, config.2, config.3);
-        assert!(n_be > 1, "We need at least more than 2 Basic Events.");
 
         // Create FT, generate BE and Gates.
         // let mut ft = FaultTree::new();
@@ -104,14 +105,15 @@ impl RFaultTree<String> {
         ft_norm.add_node(root_name.to_string(), root_node, nid);
 
         let mut used_be = vec![];
-        // For each gate, we take as roots other gates with bigger id.
-        // Id index is too large, fills with basic events.
+        // For each gate, we take as roots other gates with the bigger id.
+        // If id index is too large, fills with basic events.
         for (i, g_name) in copy.into_iter().enumerate() {
             let nid = ft_norm.new_id();
-            let k = rng.gen_range(3..=max_number_children); //=5
+            let k = rng.gen_range(3..=max_number_children);
             let val: f64 = rng.gen();
+            let ahead: usize = max_number_children.max(8);
 
-            let mut numbers: Vec<usize> = (1..=8).collect(); //this indicates how much ahead can i take a gate.
+            let mut numbers: Vec<usize> = (1..=ahead).collect(); // Indicates how much 'ahead' I can take a gate.
             numbers.shuffle(&mut rng);
             let idxs = numbers[0..k].into_iter().map(|j| j + i).collect_vec(); //take K index from numbers
 
@@ -225,7 +227,7 @@ impl RFaultTree<String> {
         }
     }
 
-    /// Save the fault tree CNF formula into a .wcnf o .cnf file depending on the format.
+    /// Save the fault tree CNF formula into a .dft.
     pub fn save_to_dft(&self, filename: String) {
         let reverse_lookup_table: HashMap<NodeId, String> = self
             .ft
