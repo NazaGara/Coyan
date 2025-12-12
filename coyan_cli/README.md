@@ -1,4 +1,4 @@
-# Coyan: A Static Fault Tree Unreliability solver using Weighted Model Counting.
+# Coyan: A Static Fault Tree Unreliability solver using Weighted Model Counting
 
 Coyan is a tool that internally translates a Fault Tree in GALILEO format to CNF formula, and if a WMC solver is provided,
 runs the solver obtaining the Unreliability of the Fault Tree. It can also generate random static Fault Trees.
@@ -90,6 +90,8 @@ Commands:
     - `--timeout-s <TIMEOUT_S>`: Execution timeout for the WMC solver in seconds. [default: 300]
     - `--seed <SEED>`: In which percentage of the last gates start to put the Basic Events if they were not used before. [default: random]
     - `-h, --help`: Print help
+
+Warn: Options may be outdated, please check using `cargo run <command> -- -h` for the latest options.
 
 ## WMC solvers
 

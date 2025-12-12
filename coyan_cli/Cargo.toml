@@ -1,7 +1,7 @@
 [package]
 name = "coyan-cli"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "A tool for Fault Tree Analysis using Model Counting."
 authors = ["Nazareno Garagiola <garagiola@depend.uni-saarland.de>"]
 license = "MIT"

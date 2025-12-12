@@ -1,8 +1,7 @@
 use index_vec::IndexVec;
 use indicatif::ParallelProgressIterator;
-// use indicatif::ParallelProgressIterator;
 use itertools::Itertools;
-use nodes::{Node, NodeId, NodeType};
+use nodes::{Node, NodeId};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashMap;
 use std::fs::File;
@@ -12,9 +11,11 @@ use std::sync::atomic::AtomicUsize;
 use crate::fault_tree_normalizer::FaultTreeNormalizer;
 use crate::formula::{CNFFormat, Formula};
 use crate::modularizer::get_modules;
-use crate::nodes;
-use crate::preproc::*; //{BPlusE, Preprocessor, PMC};
+use crate::nodes::{self, BasicEvent};
+use crate::preproc::*;
 use crate::solver::Solver;
+
+type ImpMeasures = (f64, f64, f64);
 
 impl<T> From<FaultTreeNormalizer<T>> for FaultTree<T> {
     fn from(ft_norm: FaultTreeNormalizer<T>) -> Self {
@@ -69,7 +70,7 @@ impl FaultTree<String> {
 
     /// Generate a FT from a dft file.
     pub fn new_from_file(filename: &str, simplify: bool, negate_or: bool) -> Self {
-        let mut ft_norm = FaultTreeNormalizer::new();
+        let mut ft_norm = FaultTreeNormalizer::default();
         ft_norm.read_from_file(filename, simplify);
         let mut ft = FaultTree::from(ft_norm);
         ft.negate_or = negate_or;
@@ -110,10 +111,9 @@ impl FaultTree<String> {
 
         // Create new ids for each children and add them to the subtree.
         let mut to_process = vec![new_root_id];
-        while !to_process.is_empty() {
-            let nid = to_process.pop().unwrap();
+        while let Some(nid) = to_process.pop() {
             let node = self.nodes[nid].clone();
-            let children = node.get_children_ids();
+            let children = node.children();
             let new_nid = sub_ft.new_id();
 
             new_id_mapper.insert(nid, new_nid);
@@ -141,42 +141,66 @@ impl FaultTree<String> {
         self.node_counter.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Get useful information of the Fault Tree.
+    /// Get useful information from the Tree.
     pub fn get_info(&self, _preprocess: Option<String>) -> (usize, usize, usize) {
-        let num_be = self
-            .nodes
-            .indices()
-            .filter(|i| {
-                let n = self.nodes.get(i.raw()).unwrap();
-                match n.kind {
-                    NodeType::BasicEvent(_, _, _) => true,
-                    _ => false,
+        fn visit_dfs(
+            nodes_visits: &mut IndexVec<NodeId, bool>,
+            nodes: &IndexVec<NodeId, Node<String>>,
+            curr_idx: NodeId,
+        ) {
+            // Take current node using the idx
+            let curr_node_visits = &mut nodes_visits[curr_idx];
+            let curr_child: &Node<String> = &nodes[curr_idx];
+            // First time? Mark and propagate.
+            if !*curr_node_visits {
+                *curr_node_visits = true;
+                let children = curr_child.children();
+                if !children.is_empty() {
+                    for child_nid in children
+                        .into_iter()
+                        .filter(|c_id| !nodes_visits[*c_id])
+                        .collect::<Vec<NodeId>>()
+                    {
+                        visit_dfs(nodes_visits, nodes, child_nid);
+                    }
                 }
-            })
+            }
+        }
+        let mut vis_nodes: IndexVec<NodeId, bool> =
+            IndexVec::from_vec(vec![false; self.nodes.len()]);
+        visit_dfs(&mut vis_nodes, &self.nodes, self.root_id);
+
+        let zipped = vis_nodes.iter().zip(&self.nodes).collect_vec();
+
+        let num_be = zipped
+            .iter()
+            .filter(|(vis, n)| **vis && (matches!(n, Node::BasicEvent(_, _))))
             .count();
-        let num_gates = self
-            .nodes
-            .indices()
-            .filter(|i| {
-                let n = self.nodes.get(i.raw()).unwrap();
-                match n.kind {
-                    NodeType::And(_) => true,
-                    NodeType::Or(_) => true,
-                    NodeType::Vot(_, _) => true,
-                    NodeType::Not(_) => true,
-                    _ => false,
-                }
+
+        let num_gates = zipped
+            .iter()
+            .filter(|(vis, n)| {
+                **vis
+                    && (matches!(
+                        n,
+                        Node::And(_) | Node::Or(_) | Node::Vot(_, _) | Node::Not(_) | Node::Xor(_)
+                    ))
             })
             .count();
 
         let f = self.apply_tseitin();
 
-        (num_be, num_gates, f.num_clauses())
+        (
+            num_be,
+            num_gates,
+            f.num_clauses()
+                .expect("Top gate must be an AND to translate to CNF."),
+        )
     }
 
     /// Apply the tseitin transformation to all the nodes in the tree.
     pub fn apply_tseitin(&self) -> Formula<NodeId> {
-        let mut args = if self.nodes[self.root_id].kind.is_or() && self.negate_or {
+        let mut args = if self.nodes[self.root_id].is_or() && self.negate_or {
             vec![Formula::Not(Box::new(Formula::Atom(self.root_id)))]
         } else {
             vec![Formula::Atom(self.root_id)]
@@ -186,17 +210,16 @@ impl FaultTree<String> {
             match node.tseitin_transformation(nid) {
                 Formula::And(or_args) => args.extend(or_args),
                 Formula::Or(literals) => args.push(Formula::Or(literals)),
-                Formula::_True => {}
-                _ => panic!("Something went wrong while translating the Tseitin transformation."),
+                Formula::True => {}
+                _ => panic!("Something went wrong translating the Tseitin transformation."),
             }
         }
 
         Formula::And(args)
     }
 
-    /// Apply the tseitin transformation to all the nodes in the tree.
     pub fn apply_tseitin_used_only(&self) -> Formula<NodeId> {
-        let mut args = if self.nodes[self.root_id].kind.is_or() && self.negate_or {
+        let mut args = if self.nodes[self.root_id].is_or() && self.negate_or {
             vec![Formula::Not(Box::new(Formula::Atom(self.root_id)))]
         } else {
             vec![Formula::Atom(self.root_id)]
@@ -204,10 +227,9 @@ impl FaultTree<String> {
 
         let mut to_process = vec![self.root_id];
         let mut seen = vec![self.root_id];
-        while !to_process.is_empty() {
-            let nid = to_process.pop().unwrap();
+        while let Some(nid) = to_process.pop() {
             let node = self.nodes[nid].clone();
-            let mut children = node.get_children_ids();
+            let mut children = node.children();
 
             seen.append(&mut children);
 
@@ -220,7 +242,7 @@ impl FaultTree<String> {
             match node.tseitin_transformation(nid) {
                 Formula::And(or_args) => args.extend(or_args),
                 Formula::Or(literals) => args.push(Formula::Or(literals)),
-                Formula::_True => {}
+                Formula::True => {}
                 _ => panic!("Something went wrong while translating the Tseitin transformation."),
             }
         }
@@ -236,39 +258,42 @@ impl FaultTree<String> {
         timepoint: f64,
         w_file: Option<String>,
         preprocess: Option<String>,
+        unav: bool,
     ) {
-        let (formula_cnf, weights) = self.implicit_formula(format, timepoint, preprocess);
+        let (formula_cnf, weights) = self.implicit_formula(format, timepoint, preprocess, unav);
 
         let mut f = File::create(filename).expect("unable to create file");
-        f.write_all(&formula_cnf.as_bytes())
+        f.write_all(formula_cnf.as_bytes())
             .expect("Error writing the formula to file");
         match w_file {
             None => {
-                f.write_all(&weights.as_bytes())
+                f.write_all(weights.as_bytes())
                     .expect("Error writing weights to file");
             }
             Some(w_filename) => {
                 let mut w_f =
                     File::create(format!("{}.w", w_filename)).expect("unable to create file");
-                w_f.write_all(&weights.as_bytes())
+                w_f.write_all(weights.as_bytes())
                     .expect("Error writing the BE weights to file");
             }
         }
     }
 
     /// Internal method for code reading.
-    /// Produces both the implicit boolean formula the weights in the specified format.
+    /// Produces both the CNF of the implicit boolean formula and the weights in the specified format.
     fn implicit_formula(
         &self,
         format: CNFFormat,
         timepoint: f64,
         preprocess: Option<String>,
+        unav: bool,
     ) -> (String, String) {
-        // let cnf_formula = self.apply_tseitin();
         let cnf_formula = self.apply_tseitin();
         let text_formula = cnf_formula.to_text();
         let n_vars = self.get_count();
-        let n_clauses = cnf_formula.num_clauses();
+        let n_clauses = cnf_formula
+            .num_clauses()
+            .expect("Top gate must be an AND to translate to CNF.");
 
         let (problem_line, weight_start) = match format {
             CNFFormat::MC21 => (
@@ -281,7 +306,7 @@ impl FaultTree<String> {
             ),
         };
 
-        let (gate_weights, be_weights) = self.get_weights(weight_start, timepoint);
+        let (gate_weights, be_weights) = self.get_weights(weight_start, timepoint, unav);
         let be_weights = be_weights.join("\n");
         let gate_weights = gate_weights.join("\n");
 
@@ -321,15 +346,21 @@ impl FaultTree<String> {
         format: CNFFormat,
         timepoint: f64,
         preprocess: Option<String>,
+        unav: bool,
     ) -> String {
-        let (mut formula_cnf, weights) = self.implicit_formula(format, timepoint, preprocess);
+        let (mut formula_cnf, weights) = self.implicit_formula(format, timepoint, preprocess, unav);
         formula_cnf.push_str(&weights);
 
         formula_cnf
     }
 
     /// Gives the weights in DIMACS format for the Gates and of the BE respectively.
-    fn get_weights(&self, weight_start: String, timepoint: f64) -> (Vec<String>, Vec<String>) {
+    fn get_weights(
+        &self,
+        weight_start: String,
+        timepoint: f64,
+        unav: bool,
+    ) -> (Vec<String>, Vec<String>) {
         let n_vars = self.get_count();
         // We see which NodeId do not have the weights and set them to 1.
         // Only the BasicEvents Nodes have a fixed weight.
@@ -337,15 +368,14 @@ impl FaultTree<String> {
             .nodes
             .iter()
             .enumerate()
-            .filter_map(|(i, n)| match n.kind {
-                NodeType::BasicEvent(_, _, _) => Some(i),
+            .filter_map(|(i, n)| match n {
+                Node::BasicEvent(_, _) => Some(i),
                 _ => None,
             })
             .collect_vec();
 
         // Obtain weights of the gates
         let gate_weights: Vec<String> = (0..n_vars)
-            .into_iter()
             .filter_map(|i| {
                 if !used_ids.contains(&i) {
                     Some(format!(
@@ -366,23 +396,21 @@ impl FaultTree<String> {
             .nodes
             .iter()
             .enumerate()
-            .filter_map(|(i, n)| match &n.kind {
-                NodeType::BasicEvent(_, method, value) => {
-                    let prob: f64 = if method.to_lowercase().eq("prob") {
-                        *value
-                    } else if method.to_lowercase().eq("lambda") {
-                        1.0 - (-value * timepoint).exp()
+            .filter_map(|(i, n)| match &n {
+                Node::BasicEvent(_, be) => {
+                    let weight: f64 = if !unav {
+                        be.unreliability(timepoint)
                     } else {
-                        panic!("Unsupported distribution of Basic Events. Try 'lambda' (Exponential) or 'prob' (Discrete).")
+                        be.unavailability(timepoint)
                     };
                     Some(format!(
                         "{} {} {} 0\n{} -{} {} 0",
                         weight_start,
                         i + 1,
-                        prob,
+                        weight,
                         weight_start,
                         i + 1,
-                        1.0 - prob,
+                        1.0 - weight,
                     ))
                 }
                 _ => None,
@@ -391,43 +419,37 @@ impl FaultTree<String> {
         (gate_weights, be_weights)
     }
 
-    /// Compute the Importance measures, the Birnbaum Measure, the Improvement Potential and the Criticality Measure.
+    /// Compute the Importance measures: the Birnbaum Measure, the Improvement Potential and the Criticality Measure.
     pub fn importance_measures(
         &self,
-        solver: &Box<dyn Solver + Sync>,
+        solver: &(dyn Solver + Sync),
         format: CNFFormat,
         timepoint: f64,
         negate_or: bool,
-    ) -> HashMap<String, (String, String, String)> {
-        let true_tep = solver.compute_probabilty(&self, format, timepoint, 300, None, negate_or);
+    ) -> HashMap<String, (f64, f64, f64)> {
+        let true_tep = solver.compute(self, format, timepoint, 300, None, negate_or, false);
+
         let be_lookup_table: HashMap<String, NodeId> = self
             .nodes
             .iter_enumerated()
-            .filter_map(|(nid, n)| match &n.kind {
-                NodeType::BasicEvent(name, _, _) => Some((name.to_owned(), nid.to_owned())),
+            .filter_map(|(nid, n)| match &n {
+                Node::BasicEvent(name, _) => Some((name.to_owned(), nid.to_owned())),
                 _ => None,
             })
             .collect::<HashMap<String, NodeId>>();
 
-        let be_list = self
-            .nodes
-            .iter()
-            .filter_map(|n| match &n.kind {
-                NodeType::BasicEvent(name, _, _) => Some(name.to_owned()),
-                _ => None,
-            })
-            .collect_vec();
-
-        // This has to be a Vec<HashMap<String, (String, String)>>
-        be_list
+        be_lookup_table
+            .keys()
+            .cloned()
+            .collect_vec()
             .par_iter()
             .map(|be_name| {
                 let mut ft = self.clone();
                 (
                     be_name.to_owned(),
                     ft.measure_be(
-                        be_name.clone(),
-                        &solver,
+                        String::from(be_name),
+                        solver,
                         &be_lookup_table,
                         format,
                         timepoint,
@@ -435,66 +457,50 @@ impl FaultTree<String> {
                     ),
                 )
             })
-            .collect::<HashMap<String, (f64, f64, f64)>>()
+            .collect::<HashMap<String, ImpMeasures>>()
             .into_iter()
             .map(|(be_name, (ib, perf_tep, prob))| {
-                (
-                    be_name,
-                    (
-                        format!("{}", ib),
-                        format!("{}", perf_tep - true_tep),
-                        format!("{}", ib * (prob / true_tep)),
-                    ),
-                )
+                (be_name, (ib, perf_tep - true_tep, ib * (prob / true_tep)))
             })
-            .collect::<HashMap<String, (String, String, String)>>()
+            .collect::<HashMap<String, ImpMeasures>>()
     }
 
     /// Method called by [self] in the importance_measures method to compute each measure for a specific basic event.
     fn measure_be(
         &mut self,
         comp_name: String,
-        solver: &Box<dyn Solver + Sync>,
+        solver: &(dyn Solver + Sync),
         lookup_table: &HashMap<String, NodeId>,
         format: CNFFormat,
         timepoint: f64,
         negate_or: bool,
-    ) -> (f64, f64, f64) {
-        let nid = lookup_table
+    ) -> ImpMeasures {
+        let nid = *lookup_table
             .get(&comp_name)
-            .expect("The name of the component is not a leaf in the Tree")
-            .clone();
+            .expect("The name of the component is not a leaf in the Tree");
 
-        let kind = &self.nodes.get(nid).unwrap().kind;
-        let method = kind.get_method();
-        let og_prob: f64 = if method.to_lowercase().eq("prob") {
-            kind.get_prob()
-        } else {
-            1.0 - (-kind.get_prob() * timepoint).exp()
-        };
+        let unrel = self
+            .nodes
+            .get(nid)
+            .unwrap()
+            .unreliability(timepoint)
+            .expect("We can only use `unreliability` method for basic events.");
 
-        let pos_node = Node::new(NodeType::BasicEvent(
-            comp_name.to_owned(),
-            String::from("prob"),
-            1.0,
-        ));
+        let pos_node = Node::BasicEvent(comp_name.to_owned(), BasicEvent::const_true());
         self.update_root(pos_node, nid);
-        let pos_tep = solver.compute_probabilty(&self, format, timepoint, 300, None, negate_or);
+        let pos_tep = solver.compute(self, format, timepoint, 300, None, negate_or, false);
 
-        let neg_node = Node::new(NodeType::BasicEvent(
-            comp_name.to_owned(),
-            String::from("prob"),
-            0.0,
-        ));
+        let neg_node = Node::BasicEvent(comp_name.to_owned(), BasicEvent::const_false());
         self.update_root(neg_node, nid);
-        let neg_tep = solver.compute_probabilty(&self, format, timepoint, 300, None, negate_or);
+        let neg_tep = solver.compute(self, format, timepoint, 300, None, negate_or, false);
 
-        // Revert changes. There is no need to revert, because there are different FTs.
+        // There is no need to revert the changes, because there are different FTs.
         // let og_node = Node::new(
         //     NodeType::BasicEvent(comp_name.to_owned(), method.to_owned(), og_prob),
         // );
         // self.update_roots(og_node, nid);
-        (pos_tep - neg_tep, pos_tep, og_prob)
+
+        (pos_tep - neg_tep, pos_tep, unrel)
     }
 
     /// Update a Node by replacing it with another one.
@@ -510,9 +516,10 @@ impl FaultTree<String> {
 
     /// Method to replace the computed modules (in the module_ids parameter) with basic events with the same probability of failure at the given timepoint.
     /// Be careful with the provided number of threads, for large models (~2000 basic events) is easy to run out of memory.
+    #[allow(clippy::too_many_arguments)]
     pub fn replace_modules(
         &mut self,
-        solver: &Box<dyn Solver + Sync>,
+        solver: &(dyn Solver + Sync),
         module_ids: Vec<NodeId>,
         format: CNFFormat,
         timepoint: f64,
@@ -526,21 +533,20 @@ impl FaultTree<String> {
         let chunk_size = std::cmp::max(module_ids.len().div_ceil(num_threads), num_threads);
         if display {
             // Compute the modules by chunks, could be more efficient if we take consideration of depth
-            for chunk in module_ids.chunks(chunk_size).into_iter() {
+            for chunk in module_ids.chunks(chunk_size) {
                 let to_replace: Vec<(NodeId, Node<String>)> = chunk
                     .par_iter()
                     .panic_fuse()
                     .progress()
                     .map(|&mod_id| {
                         let mod_ft = self.subtree_with_root(mod_id);
-                        let tep = solver.compute_probabilty(
-                            &mod_ft, format, timepoint, timeout_s, None, negate_or,
+                        let tep = solver.compute(
+                            &mod_ft, format, timepoint, timeout_s, None, negate_or, false,
                         );
-                        let repl_node = Node::new(NodeType::BasicEvent(
+                        let repl_node = Node::BasicEvent(
                             format!("repl_node_{}", mod_id),
-                            String::from("prob"),
-                            tep,
-                        ));
+                            BasicEvent::new_with_prob(tep),
+                        );
                         (mod_id, repl_node)
                     })
                     .collect();
@@ -549,19 +555,18 @@ impl FaultTree<String> {
                 }
             }
         } else {
-            for chunk in module_ids.chunks(chunk_size).into_iter() {
+            for chunk in module_ids.chunks(chunk_size) {
                 let to_replace: Vec<(NodeId, Node<String>)> = chunk
                     .par_iter()
                     .map(|&mod_id| {
                         let mod_ft = self.subtree_with_root(mod_id);
-                        let tep = solver.compute_probabilty(
-                            &mod_ft, format, timepoint, timeout_s, None, negate_or,
+                        let tep = solver.compute(
+                            &mod_ft, format, timepoint, timeout_s, None, negate_or, false,
                         );
-                        let repl_node = Node::new(NodeType::BasicEvent(
+                        let repl_node = Node::BasicEvent(
                             format!("repl_node_{}", mod_id),
-                            String::from("prob"),
-                            tep,
-                        ));
+                            BasicEvent::new_with_prob(tep),
+                        );
                         (mod_id, repl_node)
                     })
                     .collect();

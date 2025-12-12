@@ -1,7 +1,7 @@
 use crate::{fault_tree, nodes};
 use fault_tree::FaultTree;
 use index_vec::{IndexSlice, IndexVec};
-use nodes::{NodeId, NodeType};
+use nodes::{Node, NodeId};
 use std::fmt::Debug;
 
 /// Helper struct for the modularisation algorithm.
@@ -71,21 +71,19 @@ fn fst_dfs(
             curr_node.t_fst_visit = *time;
             curr_node.t_snd_visit = *time;
         }
-    } else {
-        if !curr_node.is_visited() {
-            curr_node.visited = true;
-            // On first visit to gate, send for DFS of children.
-            curr_node.t_fst_visit = *time;
-            // Take immediate children of node and continue the DFS.
-            for &child_nid in curr_children {
-                fst_dfs(nodes, children, child_nid, time);
-            }
-            // Come back to the current node, use one more visit, and mark second visit.
-            fst_dfs(nodes, children, curr_idx, time);
-            // Then update the max and min times.
-        } else if curr_node.t_snd_visit == 0 {
-            curr_node.t_snd_visit = *time;
+    } else if !curr_node.is_visited() {
+        curr_node.visited = true;
+        // On first visit to gate, send for DFS of children.
+        curr_node.t_fst_visit = *time;
+        // Take immediate children of node and continue the DFS.
+        for &child_nid in curr_children {
+            fst_dfs(nodes, children, child_nid, time);
         }
+        // Come back to the current node, use one more visit, and mark second visit.
+        fst_dfs(nodes, children, curr_idx, time);
+        // Then update the max and min times.
+    } else if curr_node.t_snd_visit == 0 {
+        curr_node.t_snd_visit = *time;
     }
 }
 
@@ -136,14 +134,11 @@ pub fn get_modules(ft: &mut FaultTree<String>) -> Vec<NodeId> {
     let children: IndexVec<NodeId, Vec<NodeId>> = ft
         .nodes
         .iter()
-        .map(|n| match &n.kind {
-            NodeType::BasicEvent(_, _, _) => vec![],
-            NodeType::Not(arg) => vec![*arg],
-            NodeType::And(args)
-            | NodeType::Or(args)
-            | NodeType::Xor(args)
-            | NodeType::Vot(_, args) => args.clone(),
-            NodeType::PlaceHolder(_, _, _) => vec![], //panic?
+        .map(|n| match &n {
+            Node::BasicEvent(_, _) => vec![],
+            Node::Not(arg) => vec![*arg],
+            Node::And(args) | Node::Or(args) | Node::Xor(args) | Node::Vot(_, args) => args.clone(),
+            Node::PlaceHolder(_, _, _) => vec![], //panic?
         })
         .collect();
 

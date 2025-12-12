@@ -2,12 +2,8 @@ use clap::Parser;
 use coyan_fta::fault_tree::FaultTree;
 use coyan_fta::formula::CNFFormat;
 use coyan_fta::solver::*;
-use coyan_rft::random_fault_trees::{RFTConfig, RFaultTree};
-use itertools::Itertools;
-use rand::Rng;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use coyan_rft::rft_generator::{RFTConfig, RFaultTree};
 use serde_json::json;
-use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 use std::{fmt::Debug, str::FromStr};
@@ -51,7 +47,7 @@ enum Command {
     )]
     Modularize(ModCommand),
     #[clap(about = "Generate a Static Random FT.")]
-    RFT(RandomGenerationCommand),
+    Rft(RandomGenerationCommand),
 }
 
 /// Outputs relevant information about the FT.
@@ -61,7 +57,7 @@ fn ft_info(command: InfoCommand) {
     let path = Path::new(dft_filename.as_str());
     let model_name = path.file_name().unwrap();
     let mut ft = FaultTree::new_from_file(&dft_filename, simplify, false);
-    let top_type = ft.nodes[ft.root_id].kind.type_is();
+    let top_type = ft.nodes[ft.root_id].gate_type();
     let (num_be, num_gates, num_clauses) = ft.get_info(command.preprocess);
     let num_modules = if command.modularize {
         Some(ft.modularize_ft().len())
@@ -94,56 +90,24 @@ fn translate(command: TranslateCommand) {
 
     let time_start = Instant::now();
     let ft = FaultTree::new_from_file(&dft_filename, simplify, command.config.negate_or);
-    match command.timebounds {
-        None => {
-            let cnf_path = format!("{}.cnf", cnf_filename);
-            ft.dump_cnf_to_file(
-                cnf_path,
-                format,
-                command.timepoint,
-                w_file,
-                command.config.preprocess,
-            );
-            let duration = time_start.elapsed();
-            println!(
-                "{}",
-                json!({
-                    "model": model_name.to_str(),
-                    "duration": format!("{:?}", duration),
-                })
-            );
-        }
-        Some(ts) => {
-            let (start, end, step) = (ts[0], ts[1], ts[2]);
-            let n_steps = if step != 0.0 {
-                (end / step) as i64 + 1
-            } else {
-                2
-            };
-            let timebounds = (start as i64..n_steps)
-                .into_iter()
-                .map(|v| start + ((100 * v) as f64 * step).round() / 100.0)
-                .collect_vec();
-            for t in timebounds {
-                let cnf_path = format!("{}_t={}.wcnf", cnf_filename, t);
-                ft.dump_cnf_to_file(
-                    cnf_path,
-                    format,
-                    t.to_owned(),
-                    w_file.clone(),
-                    command.config.preprocess.clone(),
-                );
-                let duration = time_start.elapsed();
-                println!(
-                    "{}",
-                    json!({
-                        "model": model_name.to_str(),
-                        "duration": format!("{:?}", duration),
-                    })
-                );
-            }
-        }
-    }
+
+    ft.dump_cnf_to_file(
+        format!("{}.cnf", cnf_filename),
+        format,
+        command.timepoint,
+        w_file,
+        command.config.preprocess,
+        command.unavailability,
+    );
+
+    let duration = time_start.elapsed();
+    println!(
+        "{}",
+        json!({
+            "model": model_name.to_str(),
+            "duration": format!("{:?}", duration),
+        })
+    );
 }
 
 /// Compute TEP of FT, given a solver and the configuration needed.
@@ -153,17 +117,8 @@ fn compute_tep(command: SolveCommand) {
     let dft_filename = command.input;
     let solver_path = command.solver_path;
     let verbose = command.config.verb;
-    let timeout_s = command.config.timeout_s;
-    let preprocess = command.config.preprocess;
     let format =
         CNFFormat::from_str(&command.config.format).expect("Unsupported format. Try MCC or MC21.");
-
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(command.config.num_threads)
-        .build_global()
-        .unwrap();
-
-    let max_size = command.config.max_cache_size / command.config.num_threads;
 
     let time_start = Instant::now();
     let ft = FaultTree::new_from_file(
@@ -173,94 +128,38 @@ fn compute_tep(command: SolveCommand) {
     );
     let mut solver: Box<dyn Solver + Sync> = get_solver_from_path(&solver_path);
     solver._set_cache_size(command.config.max_cache_size);
-    match command.timebounds.clone() {
-        None => {
-            let tep = solver.compute_probabilty(
-                &ft,
-                format,
-                command.timepoint,
-                command.config.timeout_s,
-                preprocess,
-                command.config.negate_or,
-            );
-            let duration = time_start.elapsed();
-            if !verbose {
-                println!(
-                    "{}",
-                    json!({
-                        "TEP": tep,
-                        "timepoint": command.timepoint
-                    })
-                )
-            } else {
-                let path = Path::new(dft_filename.as_str());
-                let model_name = path.file_name().unwrap();
-                println!(
-                    "{}",
-                    json!({
-                        "model": model_name.to_str(),
-                        "timepoint": command.timepoint,
-                        "TEP": tep,
-                        "duration": format!("{:?}", duration)
-                    })
-                );
-            };
-        }
-        Some(ts) => {
-            solver._set_cache_size(max_size);
-            let (start, end, step) = (ts[0], ts[1], ts[2]);
-            let n_steps = if step != 0.0 {
-                (end / step) as i64 + 1
-            } else {
-                2
-            };
-            let timebounds = (start as i64..n_steps)
-                .into_iter()
-                .map(|v| start + ((100 * v) as f64 * step).round() / 100.0)
-                .collect_vec();
-            let probs: HashMap<String, f64> = timebounds
-                .into_par_iter()
-                .filter_map(|t| {
-                    if t > end {
-                        None
-                    } else {
-                        let tep = solver.compute_probabilty(
-                            &ft,
-                            format,
-                            t,
-                            timeout_s,
-                            preprocess.clone(),
-                            command.config.negate_or,
-                        );
-                        Some((format!("t={}", t), tep))
-                    }
-                })
-                .collect::<HashMap<String, f64>>();
-            let duration = time_start.elapsed();
 
-            let path = Path::new(dft_filename.as_str());
-            let model_name = path.file_name().unwrap();
-            if verbose {
-                println!(
-                    "{}",
-                    json!({
-                        "model": model_name.to_str(),
-                        "values": probs,
-                        "duration": format!("{:?}", duration),
-                    })
-                );
-            } else {
-                println!(
-                    "{}",
-                    json!({
-                        "model": model_name.to_str(),
-                        "duration": format!("{:?}", duration),
-                        "timebounds": command.timebounds
-                    })
-                )
-            };
-        }
-    }
+    let tep = solver.compute(
+        &ft,
+        format,
+        command.timepoint,
+        command.config.timeout_s,
+        command.config.preprocess,
+        command.config.negate_or,
+        command.unavailability,
+    );
+    let duration = time_start.elapsed();
+    if !verbose {
+        println!(
+            "{}",
+            json!({
+                "TEP": tep,
+                "timepoint": command.timepoint
+            })
+        )
+    } else {
+        let path = Path::new(dft_filename.as_str());
+        let model_name = path.file_name().unwrap();
+        println!(
+            "{}",
+            json!({
+                "model": model_name.to_str(),
+                "timepoint": command.timepoint,
+                "TEP": tep,
+                "duration": format!("{:?}", duration)
+            })
+        );
+    };
 }
 
 /// Compute Criticality and Birnbaum Measures for all of the Basic Event in the FT
@@ -296,8 +195,12 @@ fn compute_importance_measures(command: ImportanceCommand) {
         );
     }
 
-    let measures =
-        ft.importance_measures(&solver, format, command.timepoint, command.config.negate_or);
+    let measures = ft.importance_measures(
+        solver.as_ref(),
+        format,
+        command.timepoint,
+        command.config.negate_or,
+    );
     let elapsed = time_start.elapsed();
 
     println!(
@@ -345,7 +248,7 @@ fn modularize_ft(command: ModCommand) {
     module_ids.reverse();
 
     ft.replace_modules(
-        &solver,
+        solver.as_ref(),
         module_ids,
         format,
         command.timepoint,
@@ -368,13 +271,14 @@ fn modularize_ft(command: ModCommand) {
     }
     let time_start = Instant::now();
 
-    let tep = solver.compute_probabilty(
+    let tep = solver.compute(
         &ft,
         format,
         command.timepoint,
         command.config.timeout_s,
         command.config.preprocess,
         command.config.negate_or,
+        false,
     );
     let elapsed = time_start.elapsed();
 
@@ -395,15 +299,7 @@ fn random_ft(comm: RandomGenerationCommand) {
     let n_nodes = comm.n_nodes;
     let rates = vec![comm.rate_be, comm.rate_and, comm.rate_or, comm.rate_vot];
     let output_filename = comm.output;
-    let seed = comm.seed;
-
-    let seed = match seed {
-        None => {
-            let mut rng = rand::thread_rng();
-            rng.gen_range(u16::MIN..u16::MAX) as u64
-        }
-        Some(u) => u,
-    };
+    let seed = comm.seed.unwrap_or(42);
 
     let output_filename = if !output_filename.ends_with(".dft") {
         format!("{}.dft", output_filename)
@@ -436,17 +332,24 @@ fn random_ft(comm: RandomGenerationCommand) {
             );
         }
         Option::Some(cmd) => {
-            let solver = get_solver_from_path(&cmd);
+            let solver = get_solver_from_path(cmd);
             rft.save_to_dft(output_filename);
             let ft = rft.extract_ft();
-            let wmc =
-                solver.compute_probabilty(&ft, CNFFormat::MC21, 1.0, comm.timeout_s, None, false);
+            let tep = solver.compute(
+                &ft,
+                CNFFormat::MC21,
+                1.0,
+                comm.timeout_s,
+                None,
+                false,
+                false,
+            );
             let duration = start.elapsed();
 
             println!(
                 "{}",
                 json!({
-                    "tep": wmc,
+                    "tep": tep,
                     "time_elapsed": format!("{:?}", duration),
                 })
             );
@@ -462,6 +365,6 @@ fn main() {
         Command::Translate(command) => translate(command),
         Command::Importance(command) => compute_importance_measures(command),
         Command::Modularize(command) => modularize_ft(command),
-        Command::RFT(command) => random_ft(command),
+        Command::Rft(command) => random_ft(command),
     }
 }

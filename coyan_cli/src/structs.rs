@@ -23,17 +23,13 @@ pub struct SolveCommand {
     /// Solver path and arguments.
     #[arg(short, long)]
     pub solver_path: String,
-    /// Time bounds, creates a range of values according to the command arguments: [start, end, step].
-    #[arg(
-        long,
-        value_delimiter = ' ',
-        num_args = 3,
-        conflicts_with = "timepoint"
-    )]
-    pub timebounds: Option<Vec<f64>>,
-    /// Compute TEP of the FT a given timepoint. Conflicts with `timebounds`.
-    #[arg(short, long, default_value_t = 1.0, conflicts_with = "timebounds")]
+    /// Compute TEP at a specific timepoint
+    #[arg(short, long, default_value_t = 1.0)]
     pub timepoint: f64,
+    /// Computes the unavailability.
+    /// See Table XI-2 of the Fault Tree Handbook. U.S. Nuclear Regulatory Commission (1981) for more information.
+    #[arg(long, default_value_t = false)]
+    pub unavailability: bool,
     /// Execution configuration parameters.
     #[command(flatten)]
     pub config: ExtraArgs,
@@ -47,20 +43,16 @@ pub struct TranslateCommand {
     /// Output file, writes a .wcnf file.
     #[arg(short, long)]
     pub output: String,
-    /// Time bounds, creates a range of values according to the command arguments: [start, end, step]. Conflicts with `timepoint`.
-    #[arg(
-        long,
-        value_delimiter = ' ',
-        num_args = 3,
-        conflicts_with = "timepoint"
-    )]
-    pub timebounds: Option<Vec<f64>>,
     /// If provided, the weights will be written to a separate file.
     #[arg(long)]
     pub w_file: Option<String>,
-    /// Compute TEP of the FT a given timepoint. Conflicts with `timebounds`.
-    #[arg(short, long, default_value_t = 1.0, conflicts_with = "timebounds")]
+    /// Compute TEP of the FT a given timepoint.
+    #[arg(short, long, default_value_t = 1.0)]
     pub timepoint: f64,
+    /// Computes the unavailability.
+    /// See Table XI-2 of the Fault Tree Handbook. U.S. Nuclear Regulatory Commission (1981) for more information.
+    #[arg(long, default_value_t = false)]
+    pub unavailability: bool,
     /// Execution configuration parameters.
     #[command(flatten)]
     pub config: ExtraArgs,
@@ -139,13 +131,13 @@ pub struct RandomGenerationCommand {
     #[arg(short, long)]
     pub output: String,
     /// Number in (0,1]. Rate of Basic Events from the total amount of Nodes.
-    #[arg(long, default_value_t = 0.5, requires = "rate_and")]
+    #[arg(long, default_value_t = 0.5)]
     pub rate_be: f64,
     /// Number in (0,1]. Rate of AND gates from the total amount of gates.
     #[arg(long, default_value_t = 0.5, requires = "rate_or")]
     pub rate_and: f64,
     /// Number in (0,1]. Rate of OR gates from the total amount of gates.
-    #[arg(long, default_value_t = 0.5)]
+    #[arg(long, default_value_t = 0.5, requires = "rate_and")]
     pub rate_or: f64,
     /// Number in (0,1]. Rate of VOT gates from the total amount of gates.
     /// If the FT contains a VOT gate, cannot be processed and solved, Can be solved but after writing to dft.

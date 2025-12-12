@@ -1,1 +1,1 @@
-pub mod random_fault_trees;
+pub mod rft_generator;

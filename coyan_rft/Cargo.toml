@@ -1,11 +1,11 @@
 [package]
 name = "coyan_rft"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 
 [dependencies]
-coyan_fta = { path = "../coyan_fta"}
+coyan_fta = { path = "../coyan_fta" }
 clap = { version = "4.4.8", features = ["derive"] }
 index_vec = "0.1.3"
 itertools = "0.12.0"

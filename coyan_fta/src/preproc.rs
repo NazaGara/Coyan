@@ -3,7 +3,7 @@ use std::process::{Command, Stdio};
 // use std::time::Instant;
 
 pub trait Preprocessor {
-    fn execute(&self, problem_line: &String, formula_cnf: &String) -> String;
+    fn execute(&self, problem_line: &str, formula_cnf: &str) -> String;
 }
 
 pub fn get_preprocessor_from_path(path: &str) -> Box<dyn Preprocessor + Sync> {
@@ -136,7 +136,7 @@ impl PMC {
 
 impl Preprocessor for PMC {
     // If something fails, it returns the normal CNF without preprocessing.
-    fn execute(&self, problem_line: &String, formula_cnf: &String) -> String {
+    fn execute(&self, problem_line: &str, formula_cnf: &str) -> String {
         // let time_start = Instant::now();
         let model_text = format!("{}\n{}\n", problem_line, formula_cnf);
 
@@ -173,10 +173,7 @@ impl Preprocessor for PMC {
 
         match child.wait_with_output() {
             Ok(out) => {
-                let processed = String::from_utf8(out.stdout)
-                    .expect("failed to produce the stdout of the solver");
-                // let _elapsed = time_start.elapsed();
-                processed
+                String::from_utf8(out.stdout).expect("failed to produce the stdout of the solver")
             }
             Err(_err) => format!("{}\n{}\n", problem_line, formula_cnf),
         }
@@ -209,7 +206,7 @@ impl BPlusE {
 }
 
 impl Preprocessor for BPlusE {
-    fn execute(&self, problem_line: &String, formula_cnf: &String) -> String {
+    fn execute(&self, problem_line: &str, formula_cnf: &str) -> String {
         // let time_start = Instant::now();
         let model_text = format!("{}\n{}\n", problem_line, formula_cnf);
 
@@ -245,13 +242,9 @@ impl Preprocessor for BPlusE {
             .expect("Failed to write to stdin");
 
         match child.wait_with_output() {
-            Ok(out) => {
-                let processed = String::from_utf8(out.stdout)
-                    .expect("failed to produce the stdout of the solver")
-                    .replace("Reading", "c Reading");
-                // let _elapsed = time_start.elapsed();
-                processed
-            }
+            Ok(out) => String::from_utf8(out.stdout)
+                .expect("failed to produce the stdout of the solver")
+                .replace("Reading", "c Reading"),
             Err(_err) => format!("{}\n{}\n", problem_line, formula_cnf),
         }
     }

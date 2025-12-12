@@ -1,10 +1,10 @@
 use index_vec::IndexVec;
 use itertools::Itertools;
-use nodes::{Node, NodeId, NodeType};
+use nodes::{Node, NodeId};
 use std::sync::atomic::AtomicUsize;
 use std::{collections::HashMap, fs::read_to_string};
 
-use crate::nodes;
+use crate::nodes::{self, BasicEvent, RepairMode};
 
 /// Helper reader function.
 fn _read_lines(filename: &str) -> Vec<String> {
@@ -32,14 +32,14 @@ impl Clone for FaultTreeNormalizer<String> {
         FaultTreeNormalizer {
             lookup_table: self.lookup_table.clone(),
             nodes: self.nodes.clone(),
-            root_id: self.root_id.clone(),
+            root_id: self.root_id,
             node_counter,
         }
     }
 }
 
-impl FaultTreeNormalizer<String> {
-    pub fn new() -> Self {
+impl Default for FaultTreeNormalizer<String> {
+    fn default() -> Self {
         FaultTreeNormalizer {
             lookup_table: HashMap::new(),
             nodes: IndexVec::new(),
@@ -47,7 +47,37 @@ impl FaultTreeNormalizer<String> {
             node_counter: AtomicUsize::new(0),
         }
     }
+}
 
+fn parse_basic_event(name: &str, args: &[String]) -> (String, BasicEvent) {
+    let name = name.replace("\"", "").replace(";", "");
+    let mut params = HashMap::new();
+
+    for item in args {
+        let (key, value) = item.split("=").collect_tuple().unwrap();
+        let value = value
+            .replace(";", "")
+            .parse::<f64>()
+            .unwrap_or_else(|_| panic!("Could not parse number {value}."));
+        params.insert(key, value);
+    }
+
+    let be = if params.contains_key("prob") {
+        BasicEvent::new_with_prob(*params.get("prob").unwrap())
+    } else {
+        let mut be = BasicEvent::new_with_rate(*params.get("lambda").expect(
+            "Basic Event must have either a discrete or continuous distribution function.",
+        ));
+        if params.contains_key("repair") {
+            be.with_repair_mode(RepairMode::Monitored(*params.get("repair").unwrap()));
+        }
+        be
+    };
+
+    (name, be)
+}
+
+impl FaultTreeNormalizer<String> {
     pub fn new_id(&self) -> NodeId {
         NodeId::new(
             self.node_counter
@@ -85,11 +115,8 @@ impl FaultTreeNormalizer<String> {
                         })
                         .collect_vec();
                     let nid = self.new_id();
-                    let node = Node::new(NodeType::PlaceHolder(
-                        name.to_owned(),
-                        op.to_lowercase().to_string(),
-                        args,
-                    ));
+                    let node =
+                        Node::PlaceHolder(name.to_owned(), op.to_lowercase().to_string(), args);
                     self.add_node(name.to_string(), node, nid);
                 }
                 [_name, op, _args @ ..]
@@ -135,47 +162,24 @@ impl FaultTreeNormalizer<String> {
                             }
                         } else {
                             let nid = self.new_id();
-                            let node = Node::new(NodeType::PlaceHolder(
+                            let node = Node::PlaceHolder(
                                 name.to_owned(),
                                 op.to_lowercase().to_string(),
                                 args,
-                            ));
+                            );
                             self.add_node(name.to_string(), node, nid);
                         }
                     } else {
                         let nid = self.new_id();
-                        let node = Node::new(NodeType::PlaceHolder(
-                            name.to_owned(),
-                            op.to_lowercase().to_string(),
-                            args,
-                        ));
+                        let node =
+                            Node::PlaceHolder(name.to_owned(), op.to_lowercase().to_string(), args);
                         self.add_node(name.to_string(), node, nid);
                     }
                 }
-                [name, args, _others_args @ ..] => {
-                    let name = name.replace("\"", "").replace(";", "");
-                    if self.lookup_table.contains_key(&name) {
-                        panic!("Name of Basic Event {} already in use.", name)
-                    }
-                    let (method, value) = args.split("=")
-                    .collect_tuple()
-                    .expect("Check if word 'lambda' or 'prob' is attached to the equal sign and its the first parameter of the basic event.");
-                    let prob: f64 = value
-                        .replace(";", "")
-                        .parse()
-                        .expect("Error while parsing value for basic event");
-                    if method.eq("prob") && (prob > 1.0 || prob < 0.0) {
-                        panic!(
-                            "Invald probability value for basic event {}. Value: {}",
-                            name, prob
-                        )
-                    }
+                [name, args @ ..] => {
+                    let (name, be) = parse_basic_event(name, args);
                     let nid = self.new_id();
-                    let node = Node::new(NodeType::BasicEvent(
-                        name.to_owned(),
-                        method.to_owned(),
-                        prob,
-                    ));
+                    let node = Node::BasicEvent(name.to_owned(), be);
                     self.add_node(name.to_string(), node, nid);
                 }
                 _ => {}
@@ -187,7 +191,7 @@ impl FaultTreeNormalizer<String> {
         root_name
     }
 
-    /// Method to make a preprocess of the placeholders, updates the nodes that point to
+    /// Method to make a preprocess of the placeholders, updating the nodes that point to
     /// unnecesary gates.
     fn preprocess_placeholders(&mut self, mapper: HashMap<String, String>) {
         let mut corrected_mapper: HashMap<String, String> = mapper
@@ -208,12 +212,12 @@ impl FaultTreeNormalizer<String> {
 
         let placeholder_nids = self
             .nodes
-            .indices()
-            .filter(|i| {
-                let n = self.nodes.get(i.raw()).unwrap();
-                match n.kind {
-                    NodeType::PlaceHolder(_, _, _) => true,
-                    _ => false,
+            .iter_enumerated()
+            .filter_map(|(nid, node)| {
+                if matches!(node, Node::PlaceHolder(_, _, _)) {
+                    Some(nid)
+                } else {
+                    None
                 }
             })
             .collect_vec();
@@ -222,8 +226,8 @@ impl FaultTreeNormalizer<String> {
             .iter()
             .map(|nid| {
                 let n = self.nodes.get(nid.to_owned()).unwrap();
-                match &n.kind {
-                    NodeType::PlaceHolder(name, op, args) => {
+                match &n {
+                    Node::PlaceHolder(name, op, args) => {
                         let args_replaced = args
                             .iter()
                             .map(|a| {
@@ -234,11 +238,11 @@ impl FaultTreeNormalizer<String> {
                                 }
                             })
                             .collect_vec();
-                        let node = Node::new(NodeType::PlaceHolder(
+                        let node = Node::PlaceHolder(
                             name.to_owned(),
                             op.to_lowercase().to_string(),
                             args_replaced,
-                        ));
+                        );
 
                         self.update_roots(node, *nid)
                     }
@@ -250,46 +254,46 @@ impl FaultTreeNormalizer<String> {
 
     /// Checks all the placeholders on the nodes Vector, then replaces each one
     /// with the correct node.
-    pub fn fill_placeholders(&mut self, set_formula: bool, keep_vot: bool) {
+    pub fn fill_placeholders(&mut self, keep_vot: bool) {
         let placeholder_nids = self
             .nodes
-            .indices()
-            .filter(|i| {
-                let n = self.nodes.get(i.raw()).unwrap();
-                match n.kind {
-                    NodeType::PlaceHolder(_, _, _) => true,
-                    _ => false,
+            .iter_enumerated()
+            .filter_map(|(nid, node)| {
+                if matches!(node, Node::PlaceHolder(_, _, _)) {
+                    Some(nid)
+                } else {
+                    None
                 }
             })
             .collect_vec();
 
         for nid in placeholder_nids {
             let nn = self.nodes.get(nid).unwrap();
-            match &nn.kind {
-                NodeType::PlaceHolder(_name, op, args) => {
+            match &nn {
+                Node::PlaceHolder(_name, op, args) => {
                     let args_ids = args
                         .iter()
                         .map(|a| {
                             *self
                                 .lookup_table
                                 .get(a)
-                                .expect(&format!("Cant find argument {}", a))
+                                .unwrap_or_else(|| panic!("Cant find argument {}", a))
                         })
                         .collect_vec();
 
-                    let mut node: Node<String> = if op.eq("or") {
-                        Node::new(NodeType::Or(args_ids))
+                    let node: Node<String> = if op.eq("or") {
+                        Node::Or(args_ids)
                     } else if op.eq("xor") {
-                        Node::new(NodeType::Xor(args_ids))
+                        Node::Xor(args_ids)
                     } else if op.eq("and") {
-                        Node::new(NodeType::And(args_ids))
+                        Node::And(args_ids)
                     } else if op.eq("not") {
                         assert_eq!(
                             args_ids.len(),
                             1,
                             "Something is wrong with the negated gate"
                         );
-                        Node::new(NodeType::Not(args_ids.first().unwrap().to_owned()))
+                        Node::Not(args_ids.first().unwrap().to_owned())
                     } else if op.contains("of") {
                         let split = op.split("of").collect_vec();
                         let k = match split[0].parse::<usize>() {
@@ -306,14 +310,14 @@ impl FaultTreeNormalizer<String> {
                         }
 
                         if n == k {
-                            Node::new(NodeType::And(args_ids))
+                            Node::And(args_ids)
                         } else if k == 1 {
-                            Node::new(NodeType::Or(args_ids))
+                            Node::Or(args_ids)
                         } else {
                             let clause_size = n - k;
 
                             if keep_vot {
-                                Node::new(NodeType::Vot(k as i64, args_ids))
+                                Node::Vot(k as i64, args_ids)
                             } else {
                                 let mut roots = args.clone();
                                 let mut aux_ids = vec![];
@@ -321,21 +325,13 @@ impl FaultTreeNormalizer<String> {
                                 while roots.len() > clause_size {
                                     let elem = roots.pop().unwrap();
                                     for subset in roots.iter().combinations(clause_size) {
-                                        new_args =
-                                            vec![self.lookup_table.get(&elem).unwrap().clone()];
-                                        let idk = subset
-                                            .iter()
-                                            .map(|s| {
-                                                self.lookup_table.get(s.to_owned()).unwrap().clone()
-                                            })
-                                            .collect_vec();
-                                        new_args.extend(idk);
+                                        new_args = vec![*self.lookup_table.get(&elem).unwrap()];
+                                        new_args.extend(subset.iter().map(|s| {
+                                            *self.lookup_table.get(s.to_owned()).unwrap()
+                                        }));
                                         let aux_gid = self.new_id();
                                         aux_ids.push(aux_gid);
-                                        let mut aux_gate = Node::new(NodeType::Or(new_args));
-                                        if set_formula {
-                                            aux_gate.set_formula(&self.nodes)
-                                        };
+                                        let aux_gate = Node::Or(new_args);
                                         self.add_node(
                                             format!("aux_gate_{}", aux_gid),
                                             aux_gate,
@@ -343,14 +339,11 @@ impl FaultTreeNormalizer<String> {
                                         )
                                     }
                                 }
-                                Node::new(NodeType::And(aux_ids))
+                                Node::And(aux_ids)
                             }
                         }
                     } else {
                         panic!("Something went wrong while processing the gates.")
-                    };
-                    if set_formula {
-                        node.set_formula(&self.nodes)
                     };
                     self.update_roots(node, nid);
                 }
@@ -362,7 +355,7 @@ impl FaultTreeNormalizer<String> {
     /// Public method to read the FT from the File, apply simplifications and replace the placeholders.
     pub fn read_from_file(&mut self, filename: &str, simplify: bool) {
         let root_name: String = self.read_file(filename, simplify);
-        self.fill_placeholders(false, false);
+        self.fill_placeholders(false);
         let root_id = self.lookup_table.get(&root_name).unwrap();
         self.root_id = *root_id;
     }

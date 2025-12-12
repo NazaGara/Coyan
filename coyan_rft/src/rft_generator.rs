@@ -1,9 +1,9 @@
 use coyan_fta::{fault_tree::*, fault_tree_normalizer::*, nodes::*};
 use itertools::Itertools;
 use rand::{
+    Rng, SeedableRng,
     rngs::StdRng,
     seq::{IteratorRandom, SliceRandom},
-    Rng, SeedableRng,
 };
 use std::{collections::HashMap, fs::File, io::Write, ops::Index};
 const EPSILON: f64 = f64::EPSILON; // 2.2204460492503131E-16f64
@@ -13,7 +13,12 @@ const EPSILON: f64 = f64::EPSILON; // 2.2204460492503131E-16f64
 /// 1st-2nd value for AND gate, and OR gate.
 /// 3rd value for Vot gates.
 #[derive(Debug)]
-pub struct RFTConfig(f64, f64, f64, f64);
+pub struct RFTConfig {
+    r_be: f64,
+    r_and: f64,
+    r_or: f64,
+    r_vot: f64,
+}
 
 impl RFTConfig {
     pub fn from_vec(args: Vec<f64>) -> Self {
@@ -26,7 +31,12 @@ impl RFTConfig {
             r_and + r_or + r_vot >= 1.0 - EPSILON && r_and + r_or + r_vot <= 1.0 + EPSILON,
             "Check the gates rates, make sure that SUM(gate_rates) = 1"
         );
-        RFTConfig(r_be, r_and, r_or, r_vot)
+        RFTConfig {
+            r_be,
+            r_and,
+            r_or,
+            r_vot,
+        }
     }
 }
 
@@ -55,50 +65,36 @@ impl RFaultTree<String> {
         seed: u64,
         max_number_children: usize,
     ) -> Self {
+        assert!(
+            max_number_children < n_nodes,
+            "The max number of children cannot be more than the overall numebr of nodes."
+        );
         let mut rng = StdRng::seed_from_u64(seed);
-        assert!(config.0 < 1.0, "The rate of basic events can't be 1.");
-        let n_be = (config.0 * n_nodes as f64) as usize;
+        assert!(config.r_be < 1.0, "The rate of basic events can't be 1.");
+        let n_be = (config.r_be * n_nodes as f64) as usize;
         assert!(n_be > 1, "We need at least more than 2 Basic Events.");
         let n_gates = (n_nodes - n_be) - 1;
-        let (p_and, p_or, _p_vot) = (config.1, config.2, config.3);
+        let (p_and, p_or, _p_vot) = (config.r_and, config.r_or, config.r_vot);
 
         // Create FT, generate BE and Gates.
-        // let mut ft = FaultTree::new();
-        let mut ft_norm = FaultTreeNormalizer::new();
-        let basic_events = (0..n_be)
-            .into_iter()
-            .map(|i| format!("x{}", i))
-            .collect_vec();
+        let mut ft_norm = FaultTreeNormalizer::default();
+        let basic_events = (0..n_be).map(|i| format!("x{}", i)).collect_vec();
 
-        let gates = (0..n_gates)
-            .into_iter()
-            .map(|i| format!("g{}", i))
-            .collect_vec();
+        let gates = (0..n_gates).map(|i| format!("g{}", i)).collect_vec();
 
         // Copy gates, take first gates so root can have it as children.
         let copy = gates.clone();
-        let elems = rng.gen_range(2..=4);
-        let first_gates = gates.clone()[0..6].to_vec();
-        let roots = first_gates.into_iter().choose_multiple(&mut rng, elems);
+        let elems = rng.gen_range(2..=max_number_children);
+        let children = gates.clone()[0..elems].to_vec();
 
         // Create root node.
         let root_name = "root".to_owned();
-        let val: f64 = rng.gen();
-        let mut root_node: Node<String> = if val >= p_and {
-            Node::new(NodeType::PlaceHolder(
-                root_name.clone(),
-                "and".to_owned(),
-                roots,
-            ))
+        let val: f64 = rng.r#gen();
+        let root_node = if val >= p_and {
+            Node::PlaceHolder(root_name.clone(), "and".to_owned(), children)
         } else {
-            Node::new(NodeType::PlaceHolder(
-                root_name.clone(),
-                "or".to_owned(),
-                roots,
-            ))
+            Node::PlaceHolder(root_name.clone(), "or".to_owned(), children)
         };
-
-        root_node.set_formula(&ft_norm.nodes);
 
         let nid = ft_norm.new_id();
         ft_norm.root_id = nid;
@@ -109,13 +105,13 @@ impl RFaultTree<String> {
         // If id index is too large, fills with basic events.
         for (i, g_name) in copy.into_iter().enumerate() {
             let nid = ft_norm.new_id();
-            let k = rng.gen_range(3..=max_number_children);
-            let val: f64 = rng.gen();
+            let k = rng.gen_range(2..=max_number_children);
+            let val: f64 = rng.r#gen();
             let ahead: usize = max_number_children.max(8);
 
             let mut numbers: Vec<usize> = (1..=ahead).collect(); // Indicates how much 'ahead' I can take a gate.
             numbers.shuffle(&mut rng);
-            let idxs = numbers[0..k].into_iter().map(|j| j + i).collect_vec(); //take K index from numbers
+            let idxs = numbers[0..k].iter().map(|j| j + i).collect_vec(); //take K index from numbers
 
             let roots = idxs
                 .iter()
@@ -130,27 +126,19 @@ impl RFaultTree<String> {
                 })
                 .collect_vec();
 
-            let mut gate = if val <= p_and {
-                Node::new(NodeType::PlaceHolder(
-                    g_name.to_owned(),
-                    "and".to_owned(),
-                    roots,
-                ))
+            let gate = if val <= p_and {
+                Node::PlaceHolder(g_name.to_owned(), "and".to_owned(), roots)
             } else if val <= p_and + p_or {
-                Node::new(NodeType::PlaceHolder(
-                    g_name.to_owned(),
-                    "or".to_owned(),
-                    roots,
-                ))
+                Node::PlaceHolder(g_name.to_owned(), "or".to_owned(), roots)
             } else {
                 let choose_k = rng.gen_range(2..roots.len());
-                Node::new(NodeType::PlaceHolder(
+                Node::PlaceHolder(
                     g_name.to_owned(),
                     format!("{}of{}", choose_k, roots.len()),
                     roots,
-                ))
+                )
             };
-            gate.set_formula(&ft_norm.nodes);
+
             ft_norm.add_node(g_name.to_string(), gate, nid);
         }
 
@@ -159,13 +147,10 @@ impl RFaultTree<String> {
             .iter()
             .map(|be| {
                 let nid = ft_norm.new_id();
-                let p: f64 = rng.gen();
-                let mut node = Node::new(NodeType::BasicEvent(
-                    be.to_string(),
-                    "prob".to_owned(),
-                    p * p_multipler,
-                ));
-                node.set_formula(&ft_norm.nodes);
+                let p: f64 = rng.r#gen();
+                let node =
+                    Node::BasicEvent(be.to_string(), BasicEvent::new_with_prob(p * p_multipler));
+
                 ft_norm.add_node(be.to_string(), node, nid);
             })
             .collect_vec();
@@ -195,8 +180,8 @@ impl RFaultTree<String> {
                 let nid = ft_norm.lookup_table.get(g).unwrap().to_owned();
                 let gate = ft_norm.nodes.get(nid).unwrap();
 
-                let op = match &gate.kind {
-                    NodeType::PlaceHolder(_, op, r) => {
+                let op = match &gate {
+                    Node::PlaceHolder(_, op, r) => {
                         new_roots.extend(r.to_vec());
                         op.to_owned()
                     }
@@ -211,14 +196,14 @@ impl RFaultTree<String> {
                 } else {
                     op
                 };
-                let mut new_node = Node::new(NodeType::PlaceHolder(g.to_owned(), op, new_roots));
-                new_node.set_formula(&ft_norm.nodes);
+                let new_node = Node::PlaceHolder(g.to_owned(), op, new_roots);
+
                 ft_norm.update_roots(new_node, nid);
             })
             .collect_vec();
 
-        // Fill placeholders rearrenges the gates and set the correct types.
-        ft_norm.fill_placeholders(true, true);
+        // Fill placeholders re-arranges the gates and set correct types.
+        ft_norm.fill_placeholders(true);
 
         RFaultTree {
             ft: ft_norm,
@@ -233,8 +218,9 @@ impl RFaultTree<String> {
             .ft
             .lookup_table
             .iter()
-            .map(|(k, v)| (v.clone(), k.clone()))
+            .map(|(k, v)| (*v, k.clone()))
             .collect();
+
         let top_line = format!(
             "toplevel {};",
             reverse_lookup_table.get(&self.ft.root_id).unwrap()
@@ -244,21 +230,29 @@ impl RFaultTree<String> {
             .ft
             .nodes
             .iter_enumerated()
-            .filter_map(|(i, n)| match &n.kind {
-                NodeType::And(_) => Some(format!(
-                    "{} {};",
+            .filter_map(|(i, n)| match &n {
+                Node::And(args) => Some(format!(
+                    "{} and {};",
                     reverse_lookup_table.get(&i).unwrap(),
-                    n.get_formula()._reduce_formula()._formula_to_dft()
+                    args.iter()
+                        .map(|c_id| reverse_lookup_table.get(c_id).unwrap())
+                        .join(" ")
                 )),
-                NodeType::Or(_) => Some(format!(
-                    "{} {};",
+                Node::Or(args) => Some(format!(
+                    "{} or {};",
                     reverse_lookup_table.get(&i).unwrap(),
-                    n.get_formula()._reduce_formula()._formula_to_dft()
+                    args.iter()
+                        .map(|c_id| reverse_lookup_table.get(c_id).unwrap())
+                        .join(" ")
                 )),
-                NodeType::Vot(_, _) => Some(format!(
-                    "{} {};",
+                Node::Vot(k, args) => Some(format!(
+                    "{} {}of{} {};",
                     reverse_lookup_table.get(&i).unwrap(),
-                    n.get_formula()._reduce_formula()._formula_to_dft()
+                    k,
+                    args.len(),
+                    args.iter()
+                        .map(|c_id| reverse_lookup_table.get(c_id).unwrap())
+                        .join(" ")
                 )),
                 _ => None,
             })
@@ -268,24 +262,22 @@ impl RFaultTree<String> {
             .ft
             .nodes
             .iter()
-            .filter_map(|n| match &n.kind {
-                NodeType::BasicEvent(name, method, prob) => {
-                    Some(format!("{} {}={};", name, method, prob))
-                }
+            .filter_map(|n| match &n {
+                Node::BasicEvent(name, be) => Some(format!("{} {};", name, be)),
                 _ => None,
             })
             .join("\n");
 
         let mut f = File::create(filename).expect("unable to create file");
-        f.write_all(&top_line.as_bytes())
+        f.write_all(top_line.as_bytes())
             .expect("Error writing problem line to file");
         f.write_all("\n".as_bytes())
             .expect("Error writing the formula to file");
-        f.write_all(&gates.as_bytes())
+        f.write_all(gates.as_bytes())
             .expect("Error writing the Gate weights to file");
         f.write_all("\n".as_bytes())
             .expect("Error writing . to file");
-        f.write_all(&be.as_bytes())
+        f.write_all(be.as_bytes())
             .expect("Error writing the BE weights to file");
     }
 }

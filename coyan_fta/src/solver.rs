@@ -1,8 +1,8 @@
 use crate::fault_tree::FaultTree;
 use crate::formula::CNFFormat;
 use itertools::Itertools;
-use rand::distributions::Alphanumeric;
 use rand::Rng;
+use rand::distributions::Alphanumeric;
 use std::fs;
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
@@ -29,11 +29,11 @@ pub struct Config {
     pub preprocess: Option<String>,
 }
 
-// impl From for Config {}
-
 pub trait Solver {
     fn _name(&self) -> String;
+
     fn get_command(&self, timeout_s: u64) -> String;
+
     fn run_model(
         &self,
         ft: &FaultTree<String>,
@@ -41,9 +41,13 @@ pub trait Solver {
         timebound: f64,
         timeout_s: u64,
         preprocess: Option<String>,
+        unav: bool,
     ) -> Result<Output, &'static str>;
+
     fn get_tep(&self, result: Output) -> f64;
-    fn compute_probabilty(
+
+    #[allow(clippy::too_many_arguments)]
+    fn compute(
         &self,
         ft: &FaultTree<String>,
         format: CNFFormat,
@@ -51,21 +55,16 @@ pub trait Solver {
         timeout_s: u64,
         preprocess: Option<String>,
         negate_top_or: bool,
+        unav: bool,
     ) -> f64 {
-        let top_is_or = ft.nodes[ft.root_id].kind.is_or();
-        if ft.nodes[ft.root_id].kind.type_is().eq("basic event") {
-            if ft.nodes[ft.root_id]
-                .kind
-                .get_method()
-                .to_lowercase()
-                .eq("prob")
-            {
-                ft.nodes[ft.root_id].kind.get_prob()
-            } else {
-                1.0 - (-ft.nodes[ft.root_id].kind.get_prob() * timepoint).exp()
-            }
+        if !unav && let Some(unreliability) = ft.nodes[ft.root_id].unreliability(timepoint) {
+            unreliability
+        } else if unav && let Some(unavailability) = ft.nodes[ft.root_id].unavailability(timepoint)
+        {
+            unavailability
         } else {
-            match self.run_model(ft, format, timepoint, timeout_s, preprocess) {
+            let top_is_or = ft.nodes[ft.root_id].is_or();
+            match self.run_model(ft, format, timepoint, timeout_s, preprocess, unav) {
                 Ok(value) => {
                     let wmc_res = self.get_tep(value);
                     if top_is_or && negate_top_or {
@@ -151,6 +150,7 @@ impl Solver for SharpsatTDSolver {
         timebound: f64,
         timeout_s: u64,
         preprocess: Option<String>,
+        unav: bool,
     ) -> Result<Output, &'static str> {
         // Set unique tmp name for each thread. With 5 char the chance of taking a name in use is 26⁵.
         let rnd_ft_file: String = rand::thread_rng()
@@ -160,7 +160,14 @@ impl Solver for SharpsatTDSolver {
             .collect();
         let tmp_ft_file = format!("{}/{}", self.tmpdir, rnd_ft_file);
 
-        ft.dump_cnf_to_file(tmp_ft_file.clone(), format, timebound, None, preprocess);
+        ft.dump_cnf_to_file(
+            tmp_ft_file.clone(),
+            format,
+            timebound,
+            None,
+            preprocess,
+            unav,
+        );
         let solver_cmd = format!("{} ./{}", self.get_command(timeout_s), tmp_ft_file);
 
         let child = Command::new("sh")
@@ -178,7 +185,7 @@ impl Solver for SharpsatTDSolver {
                     .unwrap()
                     .to_lowercase();
                 // empty means nothing went wrong. Clean and go.
-                if stderr.eq("") {
+                if stderr.is_empty() {
                     let _ = fs::remove_file(tmp_ft_file);
                     Ok(out)
                 // If it has something, check if is the killed signal
@@ -266,9 +273,10 @@ impl Solver for GPMCSolver {
         timebound: f64,
         timeout_s: u64,
         preprocess: Option<String>,
+        unav: bool,
     ) -> Result<Output, &'static str> {
         let solver_cmd = self.get_command(timeout_s);
-        let model_text = ft.dump_cnf(format, timebound, preprocess);
+        let model_text = ft.dump_cnf(format, timebound, preprocess, unav);
         let mut child = Command::new("sh")
             .arg("-c")
             .arg(solver_cmd)
@@ -288,7 +296,7 @@ impl Solver for GPMCSolver {
                 let stderr = String::from_utf8(out.stderr.clone())
                     .unwrap()
                     .to_lowercase();
-                if stderr.eq("") {
+                if stderr.is_empty() {
                     Ok(out)
                 } else if stderr.eq("killed\n") {
                     // If it has something, check if is the killed signal
@@ -301,10 +309,10 @@ impl Solver for GPMCSolver {
             Err(_err) => Err("Solver Process had an error."),
         }
     }
+
     fn get_tep(&self, result: Output) -> f64 {
         let stdout =
             String::from_utf8(result.stdout).expect("failed to produce the stdout of the solver");
-        // There is an error, that from time to time, GPMC just gets a SIGNAL 11 and finishes.
         let result_line = stdout
             .split("\n")
             .filter(|l| l.starts_with("c s exact double"))
@@ -384,6 +392,7 @@ impl Solver for DMCSolver {
         timebound: f64,
         timeout_s: u64,
         preprocess: Option<String>,
+        unav: bool,
     ) -> Result<Output, &'static str> {
         let rnd_ft_file: String = rand::thread_rng()
             .sample_iter(&Alphanumeric)
@@ -391,7 +400,14 @@ impl Solver for DMCSolver {
             .map(char::from)
             .collect();
         let tmp_ft_file = format!("{}/{}", self.tmpdir, rnd_ft_file);
-        ft.dump_cnf_to_file(tmp_ft_file.clone(), format, timebound, None, preprocess);
+        ft.dump_cnf_to_file(
+            tmp_ft_file.clone(),
+            format,
+            timebound,
+            None,
+            preprocess,
+            unav,
+        );
         let (heuristic_tree, remaining_s) = self.compute_joint_tree(timeout_s, &tmp_ft_file);
 
         let solver_cmd: String = format!("{} --cf {}", self.get_command(remaining_s), tmp_ft_file);
@@ -416,7 +432,7 @@ impl Solver for DMCSolver {
                 let stderr = String::from_utf8(out.stderr.clone())
                     .unwrap()
                     .to_lowercase();
-                if stderr.eq("") {
+                if stderr.is_empty() {
                     // empty means nothing went wrong
                     Ok(out)
                 } else if stderr.eq("killed\n") {
@@ -469,7 +485,9 @@ impl Solver for ADDMCSolver {
     }
 
     fn _set_cache_size(&mut self, _new_cs: usize) {
-        println!("WARNING!: ADDMC solver does not have any parameter to regulate the cache size or any memory consumption.")
+        println!(
+            "WARNING!: ADDMC solver does not have any parameter to regulate the cache size or any memory consumption."
+        )
     }
 
     fn get_command(&self, timeout_s: u64) -> String {
@@ -483,9 +501,10 @@ impl Solver for ADDMCSolver {
         timebound: f64,
         timeout_s: u64,
         preprocess: Option<String>,
+        unav: bool,
     ) -> Result<Output, &'static str> {
         let solver_cmd = self.get_command(timeout_s);
-        let model_text = ft.dump_cnf(format, timebound, preprocess);
+        let model_text = ft.dump_cnf(format, timebound, preprocess, unav);
 
         let mut child = Command::new("sh")
             .arg("-c")
@@ -506,7 +525,7 @@ impl Solver for ADDMCSolver {
                 let stderr = String::from_utf8(out.stderr.clone())
                     .unwrap()
                     .to_lowercase();
-                if stderr.eq("") {
+                if stderr.is_empty() {
                     // empty means nothing went wrong
                     Ok(out)
                 } else if stderr.eq("killed\n") {

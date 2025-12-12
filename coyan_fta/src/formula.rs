@@ -24,9 +24,8 @@ impl FromStr for CNFFormat {
 }
 
 /// A propositional logic formula.
-// #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Formula<A> {
     Atom(A),
     Not(Box<Self>),
@@ -34,8 +33,8 @@ pub enum Formula<A> {
     Or(Vec<Self>),
     Xor(Vec<Self>),
     Vot(i64, Vec<Self>),
-    _True,
-    _False,
+    True,
+    False,
 }
 
 impl<A> Formula<A>
@@ -46,95 +45,61 @@ where
         match self {
             Formula::Atom(a) => Formula::Not(Box::new(Formula::Atom(a.clone()))),
             Formula::Not(b) => *b.to_owned(),
-            Formula::_False => Formula::_True,
-            Formula::_True => Formula::_False,
+            Formula::False => Formula::True,
+            Formula::True => Formula::False,
             Formula::And(args) => Formula::Or(args.iter().map(|a| a.negate()).collect_vec()),
             Formula::Or(args) => Formula::And(args.iter().map(|a| a.negate()).collect_vec()),
             Formula::Xor(args) => {
-                // Or all args as is
+                // All arguments "as is"
                 let pos_args = Formula::And(args.clone());
-                // Or all args negated
+                // All arguments negated
                 let neg_args = Formula::And(args.iter().map(|a| a.negate()).collect_vec());
                 Formula::Or(vec![pos_args, neg_args])
             }
             Formula::Vot(_k, _args) => panic!("Negation of VOT gates is not allowed."),
         }
     }
+
     /// Translate the formula to a GALILEO style of formula
-    pub fn _formula_to_dft(&self) -> String {
+    pub fn formula_to_dft(&self) -> String {
         let mut out = "".to_owned();
         match self {
             Formula::Atom(name) => out += &name.to_string(),
             Formula::Vot(k, args) => {
                 let text = format!("{}of{} ", k, args.len());
-                let rec = args.iter().map(|a| a._formula_to_dft()).join(" ");
+                let rec = args.iter().map(|a| a.formula_to_dft()).join(" ");
                 out += &text;
                 out += &rec;
             }
             Formula::And(args) => {
-                let rec = args.iter().map(|a| a._formula_to_dft()).join(" ");
+                let rec = args.iter().map(|a| a.formula_to_dft()).join(" ");
                 out.push_str("and ");
                 out += &rec;
             }
             Formula::Or(args) => {
-                let rec = args.iter().map(|a| a._formula_to_dft()).join(" ");
+                let rec = args.iter().map(|a| a.formula_to_dft()).join(" ");
                 out.push_str("or ");
                 out += &rec;
             }
             Formula::Xor(args) => {
-                let rec = args.iter().map(|a| a._formula_to_dft()).join(" ");
+                let rec = args.iter().map(|a| a.formula_to_dft()).join(" ");
                 out.push_str("xor ");
                 out += &rec;
             }
             Formula::Not(x) => {
                 let inner = *x.to_owned();
-                out.push_str("-");
-                out += &inner._formula_to_dft();
+                out.push('-');
+                out += &inner.formula_to_dft();
             }
             _ => {}
         }
         out
     }
 
-    /// Method that reduces the size of the formula a bit.
-    pub fn _reduce_formula(&self) -> Formula<A> {
-        match self {
-            Formula::And(args) => Formula::And(
-                args.iter()
-                    .flat_map(|a| match a {
-                        Formula::And(inner_args) => inner_args.to_owned(),
-                        f => vec![f.to_owned()],
-                    })
-                    .collect_vec(),
-            ),
-            Formula::Or(args) => Formula::Or(
-                args.iter()
-                    .flat_map(|a| match a {
-                        Formula::Or(inner_args) => inner_args.to_owned(),
-                        f => vec![f.to_owned()],
-                    })
-                    .collect_vec(),
-            ),
-            _ => self.to_owned(),
-        }
-    }
-
     /// Returns the number of clauses only for CNF formulas.
-    pub fn num_clauses(&self) -> usize {
+    pub fn num_clauses(&self) -> Option<usize> {
         match self {
-            Formula::And(clauses) => clauses.len(),
-            _ => {
-                panic!("Formula is not a AND Formula, therefore is not a CNF formula.");
-            }
-        }
-    }
-
-    pub fn _get_args(&self) -> Option<Vec<Self>> {
-        match self {
-            Formula::And(args) => Some(args.to_vec()),
-            Formula::Or(args) => Some(args.to_vec()),
-            Formula::Xor(args) => Some(args.to_vec()),
-            Formula::Vot(_, args) => Some(args.to_vec()),
+            Formula::And(clauses) => Some(clauses.len()),
             _ => None,
         }
     }
@@ -176,7 +141,7 @@ where
             .map(|a| a.to_text())
             .collect::<Vec<String>>()
             .join(&sep);
-        out.push_str(")");
+        out.push(')');
         out
     }
 }
